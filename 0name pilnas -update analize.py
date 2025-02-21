@@ -54,6 +54,9 @@ class Config:
     # Žinutes siuntimas
     MIN_SIMILARITY_SCORE = 1.0
     MIN_CONFIDENCE_LEVEL = 0.0
+
+    RECHECK_INTERVAL = 60  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
+    MAX_RECHECK_AGE = 7 * 24 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
     
 
 class TokenMonitor:
@@ -178,14 +181,7 @@ class TokenMonitor:
                             )
                             print(f"[SUCCESS] Saved NEW token data: {address}")
 
-                            # ANALIZUOJAME TIK NAUJUS TOKENUS
-                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
-
-                            if analysis_result['status'] == 'pending':
-                                print(f"\n[ANALYSIS PENDING] {analysis_result['message']}")
-                            else:
-                                await self._handle_analysis_results(analysis_result, scanner_data)
-                            
+                                                        
                     elif is_from_token:
                         if not token_exists:
                             print(f"\n[SKIPPED UPDATE] Token not found in database: {address}")
@@ -1114,6 +1110,63 @@ class TokenMonitor:
                     'bs_ratio': None
                 }
             }
+
+        async def schedule_token_recheck(self):
+            """Periodiškai tikrina tokens lentelę ir inicijuoja pakartotinę analizę"""
+            while True:
+                try:
+                    # Gauname tokenus, kuriuos reikia pertikrinti
+                    self.db.cursor.execute('''
+                        SELECT t.address, t.last_updated
+                        FROM tokens t
+                        WHERE t.last_updated < datetime('now', '-' || ? || ' seconds')
+                        AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
+                    ''', (Config.RECHECK_INTERVAL, Config.MAX_RECHECK_AGE))
+                    
+                    tokens_to_recheck = self.db.cursor.fetchall()
+                    
+                    for token in tokens_to_recheck:
+                        address = token['address']
+                        try:
+                            # Siunčiame į scanner grupę
+                            original_message = await self.scanner_client.send_message(
+                                Config.SCANNER_GROUP,
+                                address
+                            )
+                            logger.info(f"Sent token {address} for periodic recheck")
+                            
+                            # Renkame scannerių duomenis
+                            scanner_data = await self._collect_scanner_data(address, original_message)
+                            
+                            if scanner_data:
+                                # Išsaugome atnaujintus duomenis
+                                self.db.save_token_data(
+                                    address,
+                                    scanner_data['soul'],
+                                    scanner_data['syrax'],
+                                    scanner_data['proficy'],
+                                    is_new_token=False  # Svarbu! Tai ne naujas token
+                                )
+                                logger.info(f"Updated token data for {address}")
+                                
+                                # Analizuojame token'ą
+                                analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+                                
+                                if analysis_result['status'] == 'success':
+                                    await self._handle_analysis_results(analysis_result, scanner_data)
+                                    
+                        except Exception as e:
+                            logger.error(f"Error rechecking token {address}: {e}")
+                            continue
+                        
+                        # Pauzė tarp tokenų, kad neapkrautume sistemų
+                        await asyncio.sleep(5)
+                    
+                except Exception as e:
+                    logger.error(f"Error in token recheck scheduler: {e}")
+                
+                # Laukiame iki kito ciklo
+                await asyncio.sleep(60)  # Tikriname kas minutę
 
     
 class MLIntervalAnalyzer:
@@ -2610,9 +2663,9 @@ class DatabaseManager:
     def load_gem_tokens(self) -> List[Dict]:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
         try:
-            print("\n=== Running GEM Data Diagnostics ===")
-            self.diagnose_gem_data()  # Pridedame diagnostiką
-            print("\n=== LOADING GEM TOKENS FROM DATABASE ===")
+            #print("\n=== Running GEM Data Diagnostics ===")
+            #self.diagnose_gem_data()  # Pridedame diagnostiką
+            #print("\n=== LOADING GEM TOKENS FROM DATABASE ===")
 
            
             self.cursor.execute('''
