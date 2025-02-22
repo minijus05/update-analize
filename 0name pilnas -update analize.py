@@ -1140,7 +1140,8 @@ class TokenMonitor:
                     SELECT t.address, t.last_updated
                     FROM tokens t
                     WHERE (strftime('%s', 'now') - strftime('%s', t.last_updated)) > ?
-                    AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
+                    AND (strftime('%s', 'now') - strftime('%s', t.first_seen)) > ? 
+                    AND (strftime('%s', 'now') - strftime('%s', t.first_seen)) < ?
                     AND no_recheck = 0
                 ''', (Config.RECHECK_INTERVAL, Config.MIN_RECHECK_AGE, Config.MAX_RECHECK_AGE))
                 
