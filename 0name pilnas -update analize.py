@@ -435,6 +435,15 @@ class TokenMonitor:
                 print(f"Confidence Level: {analysis_result['confidence_level']:.1f}% (>= {Config.MIN_CONFIDENCE_LEVEL}%)")
                 print(f"Sending alert to {Config.TELEGRAM_GEM_CHAT}")
                 await self.send_analysis_alert(analysis_result, scanner_data)
+                # Pažymime kad nebereikia tikrinti
+                self.db.cursor.execute('''
+                    UPDATE tokens 
+                    SET no_recheck = 1
+                    WHERE address = ?
+                ''', (scanner_data['address'],))
+                self.db.conn.commit()
+
+                
             else:
                 print(f"\n⚠️ Token does not meet criteria:")
                 print(f"Similarity Score: {analysis_result['similarity_score']:.1f}% (need >= {Config.MIN_SIMILARITY_SCORE}%)")
@@ -448,13 +457,7 @@ class TokenMonitor:
             print(f"Message: {analysis_result['message']}")
             
             # Pašalintas dubliuotas Failed Parameters rodymas
-        # Pažymime kad nebereikia tikrinti
-        self.db.cursor.execute('''
-            UPDATE tokens 
-            SET no_recheck = 1
-            WHERE address = ?
-        ''', (scanner_data['address'],))
-        self.db.conn.commit()
+        
         
         print("\n" + "="*50)
         print("ANALYSIS COMPLETE")
