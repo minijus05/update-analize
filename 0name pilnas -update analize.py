@@ -55,7 +55,7 @@ class Config:
     MIN_SIMILARITY_SCORE = 1.0
     MIN_CONFIDENCE_LEVEL = 0.0
 
-    RECHECK_INTERVAL = 3600  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
+    RECHECK_INTERVAL = 7200  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
     MAX_RECHECK_AGE = 12 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
     
 
@@ -1243,7 +1243,7 @@ class MLIntervalAnalyzer:
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
                     'holders_total': True,
-                    'holders_top10_percentage': False,
+                    'holders_top10_percentage': True,
                     'holders_top25_percentage': False,
                     'holders_top50_percentage': False,
                     'market_cap': True,
@@ -1293,7 +1293,7 @@ class MLIntervalAnalyzer:
             'volume_1h': (5000, 10000000),          # nuo 10$ iki 10M$
             'holders_total': (200, 100000),         # nuo 1 iki 100k
             'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
-            'total_scans': (10, 1000000),          # negali būti 0
+            'total_scans': (30, 1000000),          # negali būti 0
             'traders_count': (200, 100000),         # negali būti 0
             'bundle_count': (0, 0),               # visada 0
             'mint_status': (0, 0),                # visada false (0)
@@ -3208,7 +3208,7 @@ def initialize_database():
         first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_gem BOOLEAN DEFAULT FALSE,
-        total_scans INTEGER DEFAULT 1
+        total_scans INTEGER DEFAULT 1,
         no_recheck INTEGER DEFAULT 0
     )''')
 
@@ -3432,7 +3432,7 @@ if __name__ == "__main__":
     try:
         # Inicializuojame duomenų bazę
         initialize_database()
-        add_no_recheck_column()
+        
         
         # Run the bot
         asyncio.run(main())
