@@ -55,8 +55,8 @@ class Config:
     MIN_SIMILARITY_SCORE = 1.0
     MIN_CONFIDENCE_LEVEL = 0.0
 
-    RECHECK_INTERVAL = 60  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
-    MAX_RECHECK_AGE = 7 * 24 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
+    RECHECK_INTERVAL = 3600  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
+    MAX_RECHECK_AGE = 12 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
     
 
 class TokenMonitor:
@@ -179,6 +179,8 @@ class TokenMonitor:
                                 scanner_data['proficy'],
                                 is_new_token=True
                             )
+                            self.db.conn.commit()  # Pridėti ČIA
+    
                             print(f"[SUCCESS] Saved NEW token data: {address}")
 
                                                         
@@ -207,6 +209,7 @@ class TokenMonitor:
                                 scanner_data['proficy'],
                                 is_new_token=False
                             )
+                            self.db.conn.commit()  # IR ČIA
                             print(f"[SUCCESS] Updated existing token data: {address}")
                             
                             # Jei tai "from" žinutė su "10x" - pridedame į GEM duomenų bazę
@@ -1111,62 +1114,69 @@ class TokenMonitor:
                 }
             }
 
-        async def schedule_token_recheck(self):
-            """Periodiškai tikrina tokens lentelę ir inicijuoja pakartotinę analizę"""
-            while True:
-                try:
-                    # Gauname tokenus, kuriuos reikia pertikrinti
-                    self.db.cursor.execute('''
-                        SELECT t.address, t.last_updated
-                        FROM tokens t
-                        WHERE t.last_updated < datetime('now', '-' || ? || ' seconds')
-                        AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
-                    ''', (Config.RECHECK_INTERVAL, Config.MAX_RECHECK_AGE))
-                    
-                    tokens_to_recheck = self.db.cursor.fetchall()
-                    
-                    for token in tokens_to_recheck:
-                        address = token['address']
-                        try:
-                            # Siunčiame į scanner grupę
-                            original_message = await self.scanner_client.send_message(
-                                Config.SCANNER_GROUP,
-                                address
-                            )
-                            logger.info(f"Sent token {address} for periodic recheck")
-                            
-                            # Renkame scannerių duomenis
-                            scanner_data = await self._collect_scanner_data(address, original_message)
-                            
-                            if scanner_data:
-                                # Išsaugome atnaujintus duomenis
-                                self.db.save_token_data(
-                                    address,
-                                    scanner_data['soul'],
-                                    scanner_data['syrax'],
-                                    scanner_data['proficy'],
-                                    is_new_token=False  # Svarbu! Tai ne naujas token
-                                )
-                                logger.info(f"Updated token data for {address}")
-                                
-                                # Analizuojame token'ą
-                                analysis_result = self.gem_analyzer.analyze_token(scanner_data)
-                                
-                                if analysis_result['status'] == 'success':
-                                    await self._handle_analysis_results(analysis_result, scanner_data)
-                                    
-                        except Exception as e:
-                            logger.error(f"Error rechecking token {address}: {e}")
-                            continue
-                        
-                        # Pauzė tarp tokenų, kad neapkrautume sistemų
-                        await asyncio.sleep(5)
-                    
-                except Exception as e:
-                    logger.error(f"Error in token recheck scheduler: {e}")
+    async def schedule_token_recheck(self):
+        """Periodiškai tikrina tokens lentelę ir inicijuoja pakartotinę analizę"""
+        while True:
+            try:
+                # Gauname tokenus, kuriuos reikia pertikrinti
+                self.db.cursor.execute('''
+                    SELECT t.address, t.last_updated
+                    FROM tokens t
+                    WHERE (strftime('%s', 'now') - strftime('%s', t.last_updated)) > ?
+                    AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
+                ''', (Config.RECHECK_INTERVAL, Config.MAX_RECHECK_AGE))
                 
-                # Laukiame iki kito ciklo
-                await asyncio.sleep(60)  # Tikriname kas minutę
+                tokens_to_recheck = self.db.cursor.fetchall()
+                
+                for token in tokens_to_recheck:
+                    address = token['address']
+                    last_updated = token['last_updated']
+                    
+                    # Patikriname ar token'as nebuvo ką tik pridėtas (per paskutines 5 minutes)
+                    time_since_update = (datetime.now() - datetime.fromisoformat(last_updated)).total_seconds()
+                    if time_since_update < 300:  # 5 minutes
+                        continue
+                    
+                    try:
+                        # Siunčiame į scanner grupę
+                        original_message = await self.scanner_client.send_message(
+                            Config.SCANNER_GROUP,
+                            address
+                        )
+                        logger.info(f"Sent token {address} for periodic recheck")
+                        
+                        # Renkame scannerių duomenis
+                        scanner_data = await self._collect_scanner_data(address, original_message)
+                        
+                        if scanner_data:
+                            # Išsaugome atnaujintus duomenis
+                            self.db.save_token_data(
+                                address,
+                                scanner_data['soul'],
+                                scanner_data['syrax'],
+                                scanner_data['proficy'],
+                                is_new_token=False  # Svarbu! Tai ne naujas token
+                            )
+                            logger.info(f"Updated token data for {address}")
+                            
+                            # Analizuojame token'ą
+                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+                            
+                            if analysis_result['status'] == 'success':
+                                await self._handle_analysis_results(analysis_result, scanner_data)
+                                
+                    except Exception as e:
+                        logger.error(f"Error rechecking token {address}: {e}")
+                        continue
+                    
+                    # Pauzė tarp tokenų, kad neapkrautume sistemų
+                    await asyncio.sleep(30)
+                
+            except Exception as e:
+                logger.error(f"Error in token recheck scheduler: {e}")
+            
+            # Laukiame iki kito ciklo
+            await asyncio.sleep(60)  # Tikriname kas minutę
 
     
 class MLIntervalAnalyzer:
@@ -1210,16 +1220,16 @@ class MLIntervalAnalyzer:
         ]
         
         self.filter_status = {
-                    'dev_created_tokens': True,
-                    'same_name_count': True, 
-                    'same_website_count': True,
-                    'same_telegram_count': True,
-                    'same_twitter_count': True,
+                    'dev_created_tokens': False,
+                    'same_name_count': False, 
+                    'same_website_count': False,
+                    'same_telegram_count': False,
+                    'same_twitter_count': False,
                     'dev_bought_percentage': False,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
                     'holders_total': True,
-                    'holders_top10_percentage': True,
+                    'holders_top10_percentage': False,
                     'holders_top25_percentage': False,
                     'holders_top50_percentage': False,
                     'market_cap': True,
@@ -1228,15 +1238,15 @@ class MLIntervalAnalyzer:
                     'freeze_status': False,
                     'lp_status': False,
                     'total_scans': False,
-                    'volume_1h': False,
+                    'volume_1h': True,
                     'price_change_1h': False,
                     'bs_ratio_1h': False,
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
-                    'traders_count': True,
-                    'sniper_activity_percentage': True,
-                    'notable_bundle_supply_percentage': True,
-                    'bundle_supply_percentage': True
+                    'traders_count': False,
+                    'sniper_activity_percentage': False,
+                    'notable_bundle_supply_percentage': False,
+                    'bundle_supply_percentage': False
                 }
         
         self.scaler = MinMaxScaler()
@@ -1265,8 +1275,8 @@ class MLIntervalAnalyzer:
         # Absoliučios ribos parametrams
         self.ABSOLUTE_LIMITS = {
             'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
-            'market_cap': (5000, 1000000),      # nuo 100$ iki 1B$
-            'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
+            'market_cap': (10000, 200000),      # nuo 100$ iki 1B$
+            'volume_1h': (5000, 10000000),          # nuo 10$ iki 10M$
             'holders_total': (200, 100000),         # nuo 1 iki 100k
             'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
             'total_scans': (10, 1000000),          # negali būti 0
@@ -2225,21 +2235,24 @@ async def main():
         print(f"\nCurrent Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Current User's Login: minijus05\n")
 
-        # Rodyti duomenų bazės statistiką po inicializacijos
-        #monitor.db.display_database_stats()
-
         @monitor.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
         async def message_handler(event):
             await monitor.handle_new_message(event)
 
-        # Pridedame delete komandą
         @monitor.telegram.on(events.NewMessage(pattern='/delete'))
         async def delete_handler(event):
             await monitor.handle_delete_command(event)
 
         print("Bot started! Press Ctrl+C to stop.")
         
-        await monitor.telegram.run_until_disconnected()
+        # Create the recheck task
+        recheck_task = asyncio.create_task(monitor.schedule_token_recheck())
+        
+        # Run both the Telegram bot and recheck task
+        await asyncio.gather(
+            monitor.telegram.run_until_disconnected(),
+            recheck_task
+        )
         
     except Exception as e:
         logger.error(f"Error in main: {e}")
@@ -2445,6 +2458,114 @@ class DatabaseManager:
                     raise
 
             if not is_new_token:  # Kai tai UPDATE
+                # Soul Scanner duomenų atnaujinimas
+                if soul_data:
+                    self.cursor.execute('''
+                        INSERT INTO soul_scanner_data (
+                            token_address, scan_time,
+                            name, symbol, market_cap, ath_market_cap,
+                            liquidity_usd, liquidity_sol, mint_status, freeze_status,
+                            lp_status, dex_status_paid, dex_status_ads, total_scans,
+                            social_link_x, social_link_tg, social_link_web
+                        ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        address,
+                        soul_data.get('name'),
+                        soul_data.get('symbol'),
+                        soul_data.get('market_cap'),
+                        soul_data.get('ath_market_cap'),
+                        soul_data.get('liquidity', {}).get('usd'),
+                        soul_data.get('liquidity', {}).get('sol'),
+                        soul_data.get('mint_status'),
+                        soul_data.get('freeze_status'),
+                        soul_data.get('lp_status'),
+                        soul_data.get('dex_status', {}).get('paid'),
+                        soul_data.get('dex_status', {}).get('ads'),
+                        soul_data.get('total_scans'),
+                        soul_data.get('social_links', {}).get('X'),
+                        soul_data.get('social_links', {}).get('TG'),
+                        soul_data.get('social_links', {}).get('WEB')
+                    ))
+
+                # Syrax Scanner duomenų atnaujinimas 
+                if syrax_data:
+                    self.cursor.execute('''
+                        INSERT INTO syrax_scanner_data (
+                            token_address, scan_time,
+                            dev_bought_tokens, dev_bought_sol, dev_bought_percentage,
+                            dev_bought_curve_percentage, dev_created_tokens,
+                            same_name_count, same_website_count, same_telegram_count,
+                            same_twitter_count, bundle_count, bundle_supply_percentage,
+                            bundle_curve_percentage, bundle_sol, notable_bundle_count,
+                            notable_bundle_supply_percentage, notable_bundle_curve_percentage,
+                            notable_bundle_sol, sniper_activity_tokens,
+                            sniper_activity_percentage, sniper_activity_sol,
+                            created_time, traders_count, traders_last_swap,
+                            holders_total, holders_top10_percentage,
+                            holders_top25_percentage, holders_top50_percentage,
+                            dev_holds, dev_sold_times, dev_sold_sol,
+                            dev_sold_percentage
+                        ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        address,
+                        syrax_data.get('dev_bought', {}).get('tokens', 0),
+                        syrax_data.get('dev_bought', {}).get('sol', 0),
+                        syrax_data.get('dev_bought', {}).get('percentage', 0),
+                        syrax_data.get('dev_bought', {}).get('curve_percentage', 0),
+                        syrax_data.get('dev_created_tokens'),
+                        syrax_data.get('same_name_count'),
+                        syrax_data.get('same_website_count'),
+                        syrax_data.get('same_telegram_count'),
+                        syrax_data.get('same_twitter_count'),
+                        syrax_data.get('bundle', {}).get('count'),
+                        syrax_data.get('bundle', {}).get('supply_percentage'),
+                        syrax_data.get('bundle', {}).get('curve_percentage'),
+                        syrax_data.get('bundle', {}).get('sol'),
+                        syrax_data.get('notable_bundle', {}).get('count'),
+                        syrax_data.get('notable_bundle', {}).get('supply_percentage'),
+                        syrax_data.get('notable_bundle', {}).get('curve_percentage'),
+                        syrax_data.get('notable_bundle', {}).get('sol'),
+                        syrax_data.get('sniper_activity', {}).get('tokens', 0),
+                        syrax_data.get('sniper_activity', {}).get('percentage'),
+                        syrax_data.get('sniper_activity', {}).get('sol'),
+                        syrax_data.get('created_time'),
+                        syrax_data.get('traders', {}).get('count'),
+                        syrax_data.get('traders', {}).get('last_swap'),
+                        syrax_data.get('holders', {}).get('total'),
+                        syrax_data.get('holders', {}).get('top10_percentage'),
+                        syrax_data.get('holders', {}).get('top25_percentage'),
+                        syrax_data.get('holders', {}).get('top50_percentage'),
+                        syrax_data.get('dev_holds'),
+                        syrax_data.get('dev_sold', {}).get('times'),
+                        syrax_data.get('dev_sold', {}).get('sol'),
+                        syrax_data.get('dev_sold', {}).get('percentage')
+                    ))
+
+                # Proficy Price duomenų atnaujinimas
+                if proficy_data:
+                    self.cursor.execute('''
+                        INSERT INTO proficy_price_data (
+                            token_address, scan_time,
+                            price_change_5m, volume_5m, bs_ratio_5m,
+                            price_change_1h, volume_1h, bs_ratio_1h
+                        ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        address,
+                        proficy_data.get('5m', {}).get('price_change'),
+                        proficy_data.get('5m', {}).get('volume'),
+                        proficy_data.get('5m', {}).get('bs_ratio'),
+                        proficy_data.get('1h', {}).get('price_change'),
+                        proficy_data.get('1h', {}).get('volume'),
+                        proficy_data.get('1h', {}).get('bs_ratio')
+                    ))
+
+                # Atnaujiname last_updated lauką tokens lentelėje
+                self.cursor.execute('''
+                    UPDATE tokens 
+                    SET last_updated = CURRENT_TIMESTAMP
+                    WHERE address = ?
+                ''', (address,))
+                
                 initial_mc, multiplier = self.calculate_multiplier(address, current_mc)
                 
                 if initial_mc > 0 and multiplier > 0:
@@ -2760,88 +2881,7 @@ class DatabaseManager:
             rows = self.cursor.fetchall()
             tokens = [dict(row) for row in rows]
             
-            print(f"\nLoaded {len(tokens)} GEM tokens")
-        
-            # Išsami informacija apie kiekvieną token'ą
-            for i, token in enumerate(tokens, 1):
-                print(f"\n=== GEM Token #{i} ===")
-                print(f"Address: {token.get('address')}")
-                print(f"First Seen: {token.get('first_seen')}")
-                
-                print("\nSoul Scanner Data:")
-                print(f"Name: {token.get('name')}")
-                print(f"Symbol: {token.get('symbol')}")
-                print(f"Market Cap: {token.get('market_cap')}")
-                print(f"ATH Market Cap: {token.get('ath_market_cap')}")
-                print(f"Liquidity USD: {token.get('liquidity_usd')}")
-                print(f"Liquidity SOL: {token.get('liquidity_sol')}")
-                print(f"Mint Status: {token.get('mint_status')}")
-                print(f"Freeze Status: {token.get('freeze_status')}")
-                print(f"LP Status: {token.get('lp_status')}")
-                print(f"DEX Status Paid: {token.get('dex_status_paid')}")
-                print(f"DEX Status Ads: {token.get('dex_status_ads')}")
-                print(f"Total Scans: {token.get('total_scans')}")
-                print(f"Social X: {token.get('social_link_x')}")
-                print(f"Social TG: {token.get('social_link_tg')}")
-                print(f"Social Web: {token.get('social_link_web')}")
-                
-                print("\nSyrax Scanner Data:")
-                print("Dev Bought:")
-                print(f"- Tokens: {token.get('dev_bought_tokens')}")
-                print(f"- SOL: {token.get('dev_bought_sol')}")
-                print(f"- Percentage: {token.get('dev_bought_percentage')}")
-                print(f"- Curve %: {token.get('dev_bought_curve_percentage')}")
-                print(f"Dev Created Tokens: {token.get('dev_created_tokens')}")
-                print("Similar Tokens:")
-                print(f"- Name: {token.get('same_name_count')}")
-                print(f"- Website: {token.get('same_website_count')}")
-                print(f"- Telegram: {token.get('same_telegram_count')}")
-                print(f"- Twitter: {token.get('same_twitter_count')}")
-                print("Bundle Info:")
-                print(f"- Count: {token.get('bundle_count')}")
-                print(f"- Supply %: {token.get('bundle_supply_percentage')}")
-                print(f"- Curve %: {token.get('bundle_curve_percentage')}")
-                print(f"- SOL: {token.get('bundle_sol')}")
-                print("Notable Bundle:")
-                print(f"- Count: {token.get('notable_bundle_count')}")
-                print(f"- Supply %: {token.get('notable_bundle_supply_percentage')}")
-                print(f"- Curve %: {token.get('notable_bundle_curve_percentage')}")
-                print(f"- SOL: {token.get('notable_bundle_sol')}")
-                print("Sniper Activity:")
-                print(f"- Tokens: {token.get('sniper_activity_tokens')}")
-                print(f"- Percentage: {token.get('sniper_activity_percentage')}")
-                print(f"- SOL: {token.get('sniper_activity_sol')}")
-                print(f"Created Time: {token.get('created_time')}")
-                print(f"Traders Count: {token.get('traders_count')}")
-                print(f"Last Swap: {token.get('traders_last_swap')}")
-                print("Holders:")
-                print(f"- Total: {token.get('holders_total')}")
-                print(f"- Top 10%: {token.get('holders_top10_percentage')}")
-                print(f"- Top 25%: {token.get('holders_top25_percentage')}")
-                print(f"- Top 50%: {token.get('holders_top50_percentage')}")
-                print("Dev Info:")
-                print(f"- Holds: {token.get('dev_holds')}")
-                print(f"- Sold Times: {token.get('dev_sold_times')}")
-                print(f"- Sold SOL: {token.get('dev_sold_sol')}")
-                print(f"- Sold %: {token.get('dev_sold_percentage')}")
-                
-                print("\nProficy Data:")
-                print("5min:")
-                print(f"- Price Change: {token.get('price_change_5m')}")
-                print(f"- Volume: {token.get('volume_5m')}")
-                print(f"- B/S Ratio: {token.get('bs_ratio_5m')}")
-                print("1hour:")
-                print(f"- Price Change: {token.get('price_change_1h')}")
-                print(f"- Volume: {token.get('volume_1h')}")
-                print(f"- B/S Ratio: {token.get('bs_ratio_1h')}")
-
-                print("\nAnalysis Results:")
-                print(f"Similarity Score: {token.get('similarity_score')}")
-                print(f"Confidence Level: {token.get('confidence_level')}")
-                print(f"Recommendation: {token.get('recommendation')}")
-                print(f"Avg Z-Score: {token.get('avg_z_score')}")
-                print(f"Is Passed: {token.get('is_passed')}")
-                print(f"Discovery Time: {token.get('discovery_time')}")
+            
             
             # Palikta originali NULL reikšmių patikra
             print("\n=== Checking for NULL values ===")
