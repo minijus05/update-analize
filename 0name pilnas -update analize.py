@@ -179,7 +179,13 @@ class TokenMonitor:
                                 scanner_data['proficy'],
                                 is_new_token=True
                             )
-                            self.db.conn.commit()  # Pridėti ČIA
+                            # Pažymime, kad šio tokeno nebereikia tikrinti
+                            self.db.cursor.execute('''
+                                UPDATE tokens 
+                                SET no_recheck = TRUE
+                                WHERE address = ?
+                            ''', (address,))
+                            self.db.conn.commit()
     
                             print(f"[SUCCESS] Saved NEW token data: {address}")
 
@@ -441,6 +447,13 @@ class TokenMonitor:
             print(f"Message: {analysis_result['message']}")
             
             # Pašalintas dubliuotas Failed Parameters rodymas
+        # Pažymime kad nebereikia tikrinti
+        self.db.cursor.execute('''
+            UPDATE tokens 
+            SET no_recheck = 1
+            WHERE address = ?
+        ''', (scanner_data['address'],))
+        self.db.conn.commit()
         
         print("\n" + "="*50)
         print("ANALYSIS COMPLETE")
@@ -1124,6 +1137,7 @@ class TokenMonitor:
                     FROM tokens t
                     WHERE (strftime('%s', 'now') - strftime('%s', t.last_updated)) > ?
                     AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
+                    AND no_recheck = 0
                 ''', (Config.RECHECK_INTERVAL, Config.MAX_RECHECK_AGE))
                 
                 tokens_to_recheck = self.db.cursor.fetchall()
@@ -3195,6 +3209,7 @@ def initialize_database():
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_gem BOOLEAN DEFAULT FALSE,
         total_scans INTEGER DEFAULT 1
+        no_recheck INTEGER DEFAULT 0
     )''')
 
     # Soul Scanner duomenys
@@ -3389,10 +3404,35 @@ def initialize_database():
     conn.close()
     logger.info("Database initialized successfully")
 
+def add_no_recheck_column():
+    """Prideda no_recheck stulpelį į egzistuojančią tokens lentelę"""
+    try:
+        conn = sqlite3.connect('token_monitor.db')
+        c = conn.cursor()
+        
+        # Patikriname ar stulpelis jau egzistuoja
+        c.execute("PRAGMA table_info(tokens)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'no_recheck' not in columns:
+            # Pridedame stulpelį be DEFAULT reikšmės
+            c.execute('ALTER TABLE tokens ADD COLUMN no_recheck INTEGER')
+            
+            # Nustatome pradines reikšmes
+            c.execute('UPDATE tokens SET no_recheck = 0')
+            
+            conn.commit()
+            print("Successfully added no_recheck column")
+    except Exception as e:
+        print(f"Error adding column: {e}")
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     try:
         # Inicializuojame duomenų bazę
         initialize_database()
+        add_no_recheck_column()
         
         # Run the bot
         asyncio.run(main())
