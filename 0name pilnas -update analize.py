@@ -55,7 +55,8 @@ class Config:
     MIN_SIMILARITY_SCORE = 1.0
     MIN_CONFIDENCE_LEVEL = 0.0
 
-    RECHECK_INTERVAL = 7200  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
+    MIN_RECHECK_AGE = 7200   # Minimalus laikas (1h) prieš pirmą patikrinimą
+    RECHECK_INTERVAL = 3600  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
     MAX_RECHECK_AGE = 12 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
     
 
@@ -182,7 +183,7 @@ class TokenMonitor:
                             # Pažymime, kad šio tokeno nebereikia tikrinti
                             self.db.cursor.execute('''
                                 UPDATE tokens 
-                                SET no_recheck = TRUE
+                                SET no_recheck = 0
                                 WHERE address = ?
                             ''', (address,))
                             self.db.conn.commit()
@@ -1138,7 +1139,7 @@ class TokenMonitor:
                     WHERE (strftime('%s', 'now') - strftime('%s', t.last_updated)) > ?
                     AND datetime(t.first_seen) > datetime('now', '-' || ? || ' seconds')
                     AND no_recheck = 0
-                ''', (Config.RECHECK_INTERVAL, Config.MAX_RECHECK_AGE))
+                ''', (Config.RECHECK_INTERVAL, Config.MIN_RECHECK_AGE, Config.MAX_RECHECK_AGE))
                 
                 tokens_to_recheck = self.db.cursor.fetchall()
                 
