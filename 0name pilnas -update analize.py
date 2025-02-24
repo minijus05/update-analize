@@ -283,7 +283,7 @@ class TokenMonitor:
 
     async def _collect_scanner_data(self, address, original_message):
         """Renka duomenis iš visų scannerių"""
-        timeout = 15
+        timeout = 30  # Padidintas timeout iš 15 į 30
         start_time = time.time()
         last_check_time = 0
         scanner_data = {
@@ -291,40 +291,53 @@ class TokenMonitor:
             "syrax": None,
             "proficy": None
         }
+        
+        processed_messages = set()  # Pridėtas set processed messages
 
         while time.time() - start_time < timeout:
             if time.time() - last_check_time >= 1:
                 last_check_time = time.time()
 
-                async for message in self.scanner_client.iter_messages(
-                    Config.SCANNER_GROUP,
-                    limit=10,
-                    min_id=original_message.id
-                ):
-                    if message.sender_id == Config.SOUL_SCANNER_BOT:
-                        scanner_data["soul"] = self.parse_soul_scanner_response(message.text)
-                    elif message.sender_id == Config.SYRAX_SCANNER_BOT:
-                        scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
-                    elif message.sender_id == Config.PROFICY_PRICE_BOT:
-                        scanner_data["proficy"] = await self.parse_proficy_price(message.text)
+                for retry in range(3):
+                    try:
+                        async for message in self.scanner_client.iter_messages(
+                            Config.SCANNER_GROUP,
+                            limit=10,
+                            min_id=original_message.id
+                        ):
+                            # Praleidžiame jau apdorotas žinutes
+                            if message.id in processed_messages:
+                                continue
+                            processed_messages.add(message.id)
 
-                    # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
-                    if scanner_data["soul"] and scanner_data["syrax"]:
-                        # Jei neturime Proficy duomenų, sukuriame default reikšmes
-                        if not scanner_data["proficy"]:
-                            scanner_data["proficy"] = {
-                                "price_change_5m": "0",
-                                "volume_5m": "0",
-                                "bs_ratio_5m": "1/1",
-                                "price_change_1h": "0",
-                                "volume_1h": "0",
-                                "bs_ratio_1h": "1/1"
-                            }
-                        return scanner_data
+                            if message.sender_id == Config.SOUL_SCANNER_BOT:
+                                scanner_data["soul"] = self.parse_soul_scanner_response(message.text)
+                            elif message.sender_id == Config.SYRAX_SCANNER_BOT:
+                                scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
+                            elif message.sender_id == Config.PROFICY_PRICE_BOT:
+                                scanner_data["proficy"] = await self.parse_proficy_price(message.text)
 
-            await asyncio.sleep(1)
-        
-        # Jei turime bent Soul ir Syrax duomenis po timeout, grąžiname juos
+                            if scanner_data["soul"] and scanner_data["syrax"]:
+                                if not scanner_data["proficy"]:
+                                    scanner_data["proficy"] = {
+                                        "price_change_5m": "0",
+                                        "volume_5m": "0",
+                                        "bs_ratio_5m": "1/1",
+                                        "price_change_1h": "0",
+                                        "volume_1h": "0",
+                                        "bs_ratio_1h": "1/1"
+                                    }
+                                return scanner_data
+
+                    except Exception as e:
+                        logger.error(f"Error collecting data (attempt {retry+1}/3): {e}")
+                        if retry < 2:
+                            await asyncio.sleep(1)
+                            continue
+                        break
+
+                await asyncio.sleep(1)
+            
         if scanner_data["soul"] and scanner_data["syrax"]:
             if not scanner_data["proficy"]:
                 scanner_data["proficy"] = {
@@ -336,7 +349,7 @@ class TokenMonitor:
                     "bs_ratio_1h": "1/1"
                 }
             return scanner_data
-        
+            
         return None
 
     async def _handle_analysis_results(self, analysis_result, scanner_data):
@@ -436,12 +449,19 @@ class TokenMonitor:
                 print(f"Sending alert to {Config.TELEGRAM_GEM_CHAT}")
                 await self.send_analysis_alert(analysis_result, scanner_data)
                 # Pažymime kad nebereikia tikrinti
-                self.db.cursor.execute('''
-                    UPDATE tokens 
-                    SET no_recheck = 1
-                    WHERE address = ?
-                ''', (scanner_data['address'],))
-                self.db.conn.commit()
+                # Pažymime kad nebereikia tikrinti
+                address = (
+                    scanner_data.get('soul', {}).get('contract_address') or 
+                    scanner_data.get('soul', {}).get('address') or 
+                    scanner_data.get('address')
+                )
+                if address:
+                    self.db.cursor.execute('''
+                        UPDATE tokens 
+                        SET no_recheck = 1
+                        WHERE address = ?
+                    ''', (address,))
+                    self.db.conn.commit()
 
                 
             else:
@@ -1106,6 +1126,7 @@ class TokenMonitor:
                             'volume': convert_volume(parts[2]),
                             'bs_ratio': parts[3]
                         }
+                        logger.info(f"Parsed 1H data: {data['1h']}")
                     else:
                         logger.warning("Incomplete 1H data in ProficyPriceBot message")
 
@@ -1244,7 +1265,7 @@ class MLIntervalAnalyzer:
                     'same_website_count': False,
                     'same_telegram_count': False,
                     'same_twitter_count': False,
-                    'dev_bought_percentage': False,
+                    'dev_bought_percentage': True,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
                     'holders_total': True,
@@ -1262,10 +1283,10 @@ class MLIntervalAnalyzer:
                     'bs_ratio_1h': False,
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
-                    'traders_count': False,
+                    'traders_count': True,
                     'sniper_activity_percentage': False,
-                    'notable_bundle_supply_percentage': False,
-                    'bundle_supply_percentage': False
+                    'notable_bundle_supply_percentage': True,
+                    'bundle_supply_percentage': True
                 }
         
         self.scaler = MinMaxScaler()
@@ -1294,12 +1315,12 @@ class MLIntervalAnalyzer:
         # Absoliučios ribos parametrams
         self.ABSOLUTE_LIMITS = {
             'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
-            'market_cap': (10000, 200000),      # nuo 100$ iki 1B$
-            'volume_1h': (5000, 10000000),          # nuo 10$ iki 10M$
-            'holders_total': (200, 100000),         # nuo 1 iki 100k
+            'market_cap': (15000, 200000),      # nuo 100$ iki 1B$
+            'volume_1h': (8000, 10000000),          # nuo 10$ iki 10M$
+            'holders_total': (250, 100000),         # nuo 1 iki 100k
             'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
             'total_scans': (30, 1000000),          # negali būti 0
-            'traders_count': (200, 100000),         # negali būti 0
+            'traders_count': (50, 100000),         # negali būti 0
             'bundle_count': (0, 0),               # visada 0
             'mint_status': (0, 0),                # visada false (0)
             'freeze_status': (0, 0),              # visada false (0)
@@ -1307,11 +1328,11 @@ class MLIntervalAnalyzer:
             'sniper_activity_tokens': (0, 0),     # visada 0
             'bs_ratio_1h': (0.1, 10.0),           # nuo 0.1 iki 10.0
             # Naujai pridedami parametrai
-            'sniper_activity_percentage': (0, 16),       # nuo 0% iki 100%
-            'notable_bundle_supply_percentage': (0, 16),  # nuo 0% iki 100%
-            'bundle_supply_percentage': (0, 16),          # nuo 0% iki 100%
+            'sniper_activity_percentage': (0, 50),       # nuo 0% iki 100%
+            'notable_bundle_supply_percentage': (0, 50),  # nuo 0% iki 100%
+            'bundle_supply_percentage': (0, 50),          # nuo 0% iki 100%
             'dev_sold_percentage': (50, 100),        # Tokios pat ribos kaip ir kitiems procentiniams parametrams
-            'dev_bought_percentage': (0, 10),  
+            'dev_bought_percentage': (0, 50),  
         }
 
     def _parse_ratio_value(self, ratio_str) -> float:
