@@ -49,7 +49,7 @@ class Config:
 
     # GEM settings
     GEM_MULTIPLIER = "10x"
-    MIN_GEM_SCORE = 10
+    MIN_GEM_SCORE = 1
 
     # Žinutes siuntimas
     MIN_SIMILARITY_SCORE = 1.0
@@ -298,18 +298,22 @@ class TokenMonitor:
         }
         
         processed_messages = set()  # Pridėtas set processed messages
+        logger.info(f"Starting data collection for {address}") # <-- PRIDĖTI
 
         while time.time() - start_time < timeout:
             if time.time() - last_check_time >= 1:
                 last_check_time = time.time()
+                logger.info("Checking messages...") # <-- PRIDĖTI
 
                 for retry in range(3):
                     try:
                         async for message in self.scanner_client.iter_messages(
                             Config.SCANNER_GROUP,
-                            limit=10,
+                            limit=100,
                             min_id=original_message.id
                         ):
+                            logger.info(f"Found message from {message.sender_id}")
+
                             # Praleidžiame jau apdorotas žinutes
                             if message.id in processed_messages:
                                 continue
@@ -321,6 +325,7 @@ class TokenMonitor:
                                 scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
                             elif message.sender_id == Config.PROFICY_PRICE_BOT:
                                 scanner_data["proficy"] = await self.parse_proficy_price(message.text)
+                                logger.info("Got Proficy Price data")
 
                             if scanner_data["soul"] and scanner_data["syrax"]:
                                 if not scanner_data["proficy"]:
@@ -1052,135 +1057,91 @@ class TokenMonitor:
 
     async def parse_proficy_price(self, message: str) -> Dict:
         """Parse ProficyPriceBot message"""
+        logger.info(f"Starting to parse Proficy message: {message}")  # <-- NAUJAS
         try:
-            # 1. PRIDĖTI: Patikrinimas ar yra valid intervals
-            if "No valid intervals found" in message:
-                logger.warning("No valid intervals found in ProficyPriceBot message")
-                return {
-                    '5m': {
-                        'price_change': None,
-                        'volume': None,
-                        'bs_ratio': None
-                    },
-                    '1h': {
-                        'price_change': None,
-                        'volume': None,
-                        'bs_ratio': None
-                    }
-                }
-
-            # Inicializuojame data su None reikšmėmis
+            # Bazinė duomenų struktūra
             data = {
-                '5m': {
-                    'price_change': None,
-                    'volume': None,
-                    'bs_ratio': None
-                },
-                '1h': {
-                    'price_change': None,
-                    'volume': None,
-                    'bs_ratio': None
-                }
+                '5m': {'price_change': None, 'volume': None, 'bs_ratio': None},
+                '1h': {'price_change': None, 'volume': None, 'bs_ratio': None}
             }
 
-            if not message:
-                logger.warning("Empty message received from ProficyPriceBot")
+            # Tikrinimai
+            if not message or "No valid intervals found" in message:
+                logger.warning(f"Invalid message: {message}")
                 return data
-                    
-            lines = message.split('\n')
-            
+
             def convert_volume(volume_str: str) -> float:
-                """Helper function to convert volume with K or M suffix"""
                 try:
-                    # Debug
-                    #logger.info(f"Converting volume string: '{volume_str}'")
+                    # Nuimam $ ir pakeičiam - į -
+                    clean_str = volume_str.replace('$', '').replace('−', '-')
                     
-                    # Pašaliname $ ir %
-                    volume_str = volume_str.replace('$', '').replace('%', '')
-                    
-                    if 'M' in volume_str:
-                        val = float(volume_str.replace('M', '')) * 1000000
-                    elif 'K' in volume_str:
-                        val = float(volume_str.replace('K', '')) * 1000
+                    # Konvertuojam K/M
+                    if 'K' in clean_str:
+                        val = float(clean_str.replace('K', '')) * 1000
+                    elif 'M' in clean_str:
+                        val = float(clean_str.replace('M', '')) * 1000000
                     else:
-                        val = float(volume_str)
-                        
-                    #logger.info(f"Converted {volume_str} to {val}")
+                        val = float(clean_str)
+                    
                     return val
                 except (ValueError, TypeError) as e:
-                    #logger.error(f"Error converting volume '{volume_str}': {str(e)}")
+                    logger.error(f"Error converting volume {volume_str}: {e}")  # <-- NAUJAS
                     return 0
 
-            def format_price_change(price: float) -> str:
-                """Helper function to format price change with K suffix if needed"""
-                if abs(price) >= 1000:
-                    return f"{price/1000:.1f}K"
-                return f"{price:.2f}"
+            # Einam per eilutes
+            lines = message.split('\n')
+            logger.info(f"Processing lines: {lines}")  # <-- NAUJAS
             
             for line in lines:
+                # Skip header
                 if 'Price' in line and 'Volume' in line and 'B/S' in line:
+                    logger.debug(f"Skipping header line: {line}")  # <-- NAUJAS
                     continue
-                    
-                # 3. PAKEISTI: Pridėti parts ilgio patikrinimą
-                if '5M:' in line:
-                    parts = line.split()
-                    if len(parts) >= 4:  # Patikrinam ar užtenka dalių
-                        data['5m'] = {
-                            'price_change': convert_volume(parts[1].replace('%', '')),
-                            'volume': convert_volume(parts[2]),
-                            'bs_ratio': parts[3]
-                        }
-                    else:
-                        logger.warning("Incomplete 5M data in ProficyPriceBot message")
-                    
-                if '1H:' in line:
-                    # Pridedame debug informaciją
-                    #logger.info(f"Raw 1H line: '{line}'")
-                    
-                    # Pakeičiame split() į geresnį formatą
-                    parts = [part.strip() for part in line.split() if part.strip()]
-                    #logger.info(f"Split parts: {parts}")
-                    
-                    if len(parts) >= 4:  # Patikrinam ar užtenka dalių
-                        try:
-                            price_change = convert_volume(parts[1].replace('%', ''))
-                            volume = convert_volume(parts[2])
-                            bs_ratio = parts[3]
-                            
-                            # Debug informacija prieš įrašant
-                            #logger.info(f"Trying to parse: price={parts[1]}, volume={parts[2]}, bs={parts[3]}")
-                            
-                            data['1h'] = {
-                                'price_change': price_change,
-                                'volume': volume,
-                                'bs_ratio': bs_ratio
-                            }
-                            #logger.info(f"Successfully parsed 1H data: {data['1h']}")
-                        except Exception as e:
-                            logger.error(f"Error parsing 1H values: {str(e)}, parts: {parts}")
-                    else:
-                        logger.warning(f"Incomplete 1H data. Found {len(parts)} parts in line: '{line}'")
 
-            # 4. PRIDĖTI: Patikrinimas ar gavome bent kokius nors duomenis
-            if data['5m']['price_change'] is None and data['1h']['price_change'] is None:
-                logger.warning("No valid intervals found in ProficyPriceBot message")
-                    
+                # Tikrinam 5M ir 1H eilutes
+                for period, key in [('5M:', '5m'), ('1H:', '1h')]:
+                    if period in line:
+                        try:
+                            # Split ir clean
+                            parts = [p.strip() for p in line.split() if p.strip()]
+                            logger.info(f"Processing {period} line: {parts}")  # <-- NAUJAS
+                            
+                            if len(parts) >= 4:
+                                # Price change: pašalinam % ir konvertuojam į float
+                                price_str = parts[1].replace('%', '').replace('−', '-')
+                                price = float(price_str)
+                                logger.debug(f"Parsed price: {price} from {price_str}")  # <-- NAUJAS
+                                
+                                # Volume: naudojam convert_volume
+                                volume = convert_volume(parts[2])
+                                logger.debug(f"Parsed volume: {volume} from {parts[2]}")  # <-- NAUJAS
+                                
+                                # B/S ratio: imam kaip yra
+                                bs_ratio = parts[3]
+                                
+                                data[key] = {
+                                    'price_change': price,
+                                    'volume': volume,
+                                    'bs_ratio': bs_ratio
+                                }
+                                
+                                logger.info(f"Successfully parsed {period} data: {data[key]}")
+                            else:
+                                logger.warning(f"Not enough parts in {period} line: {parts}")
+                                
+                        except Exception as e:
+                            logger.error(f"Error parsing {period} line '{line}': {str(e)}")
+                            # Paliekam default None reikšmes tam periodui
+
+            # Patikrinam galutinius rezultatus
+            logger.info(f"Final parsed data: {data}")  # <-- NAUJAS
             return data
-            
+
         except Exception as e:
-            # 5. PAKEISTI: Grąžinti None reikšmes vietoj 'N/A'
-            logger.error(f"Error parsing ProficyPrice message: {e}")
+            logger.error(f"Global error in parse_proficy_price: {str(e)}", exc_info=True)  # <-- NAUJAS
             return {
-                '5m': {
-                    'price_change': None,
-                    'volume': None,
-                    'bs_ratio': None
-                },
-                '1h': {
-                    'price_change': None,
-                    'volume': None,
-                    'bs_ratio': None
-                }
+                '5m': {'price_change': None, 'volume': None, 'bs_ratio': None},
+                '1h': {'price_change': None, 'volume': None, 'bs_ratio': None}
             }
 
     async def schedule_token_recheck(self):
@@ -1311,7 +1272,7 @@ class MLIntervalAnalyzer:
                     'lp_status': False,
                     'total_scans': False,
                     'volume_1h': True,
-                    'price_change_1h': False,
+                    'price_change_1h': True,
                     'bs_ratio_1h': False,
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
@@ -1365,7 +1326,7 @@ class MLIntervalAnalyzer:
             'lp_status': (1, 1),                     # Boolean
             'total_scans': (30, 1000000),
             'volume_1h': (8000, 10000000),
-            'price_change_1h': (-100, 1000),
+            'price_change_1h': (1, 1000),
             'bs_ratio_1h': (0.1, 10.0),
             'bundle_count': (0, 0),
             'sniper_activity_tokens': (0, 0),
