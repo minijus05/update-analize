@@ -205,7 +205,7 @@ class TokenMonitor:
                         
                         print(f"\n[UPDATE TOKEN DETECTED] Address: {address}")
                             
-                        print(f"\n[UPDATE TOKEN DETECTED] Address: {address}")
+                        
                         # Siunčiame į scanner grupę
                         original_message = await self.scanner_client.send_message(
                             Config.SCANNER_GROUP,
@@ -228,11 +228,7 @@ class TokenMonitor:
                             self.db.conn.commit()  # IR ČIA
                             print(f"[SUCCESS] Updated existing token data: {address}")
                             
-                            # Jei tai "from" žinutė su "10x" - pridedame į GEM duomenų bazę
-                            if Config.GEM_MULTIPLIER in event.message.text:
-                                self.gem_analyzer.add_gem_token(scanner_data)
-                                print(f"[GEM ADDED] Token marked as GEM: {address}")
-                            
+                                                        
                             
         except Exception as e:
             logger.error(f"Error handling message: {e}")
@@ -1234,9 +1230,7 @@ class TokenMonitor:
                             )
                             logger.info(f"Updated token data for {address}")
 
-                            # Pridedame į GEM analizę kaip pradinius duomenis
-                            self.gem_analyzer.add_gem_token(scanner_data)
-                            
+                                                       
                             # Analizuojame token'ą
                             analysis_result = self.gem_analyzer.analyze_token(scanner_data)
                             
@@ -2631,25 +2625,36 @@ class DatabaseManager:
                         
                         # Gauname pradinius duomenis
                         self.cursor.execute('''
-                            SELECT * FROM soul_scanner_data 
-                            WHERE token_address = ? 
-                            ORDER BY scan_time ASC 
+                            SELECT s.* 
+                            FROM soul_scanner_data s
+                            JOIN tokens t ON t.address = s.token_address
+                            WHERE s.token_address = ?
+                            AND t.no_recheck = 1
+                            ORDER BY s.scan_time ASC 
                             LIMIT 1
                         ''', (address,))
                         initial_soul_data = dict(self.cursor.fetchone())
-                        
+
+                        # Tas pats Syrax duomenims
                         self.cursor.execute('''
-                            SELECT * FROM syrax_scanner_data 
-                            WHERE token_address = ? 
-                            ORDER BY scan_time ASC 
+                            SELECT sy.* 
+                            FROM syrax_scanner_data sy
+                            JOIN tokens t ON t.address = sy.token_address
+                            WHERE sy.token_address = ?
+                            AND t.no_recheck = 1
+                            ORDER BY sy.scan_time ASC 
                             LIMIT 1
                         ''', (address,))
                         initial_syrax_data = dict(self.cursor.fetchone())
 
+                        # Tas pats Proficy duomenims
                         self.cursor.execute('''
-                            SELECT * FROM proficy_price_data 
-                            WHERE token_address = ? 
-                            ORDER BY scan_time ASC 
+                            SELECT p.* 
+                            FROM proficy_price_data p
+                            JOIN tokens t ON t.address = p.token_address
+                            WHERE p.token_address = ?
+                            AND t.no_recheck = 1
+                            ORDER BY p.scan_time ASC 
                             LIMIT 1
                         ''', (address,))
                         initial_proficy_data = dict(self.cursor.fetchone())
