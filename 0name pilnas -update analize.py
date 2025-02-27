@@ -291,19 +291,20 @@ class TokenMonitor:
         timeout = 30  # Padidintas timeout iš 15 į 30
         start_time = time.time()
         last_check_time = 0
+                
+        processed_messages = set()  # Pridėtas set processed messages
+    # SVARBU: Kiekvienam kvietimui kuriam naują dictionary
         scanner_data = {
             "soul": None,
-            "syrax": None,
+            "syrax": None, 
             "proficy": None
         }
-        
-        processed_messages = set()  # Pridėtas set processed messages
+
         logger.info(f"Starting data collection for {address}") # <-- PRIDĖTI
 
         while time.time() - start_time < timeout:
             if time.time() - last_check_time >= 1:
                 last_check_time = time.time()
-                logger.info("Checking messages...") # <-- PRIDĖTI
 
                 for retry in range(3):
                     try:
@@ -312,8 +313,6 @@ class TokenMonitor:
                             limit=100,
                             min_id=original_message.id
                         ):
-                            logger.info(f"Found message from {message.sender_id}")
-
                             # Praleidžiame jau apdorotas žinutes
                             if message.id in processed_messages:
                                 continue
@@ -325,10 +324,15 @@ class TokenMonitor:
                                 scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
                             elif message.sender_id == Config.PROFICY_PRICE_BOT:
                                 scanner_data["proficy"] = await self.parse_proficy_price(message.text)
-                                logger.info("Got Proficy Price data")
 
                             if scanner_data["soul"] and scanner_data["syrax"]:
-                                if not scanner_data["proficy"]:
+                               # Jei turime visus duomenis - grąžiname iš karto
+                                if scanner_data["proficy"]:
+                                    return scanner_data
+                                # Jei praėjo 10s ir nėra Proficy - grąžiname su default
+                                elif time.time() - start_time > 10:
+
+                            
                                     scanner_data["proficy"] = {
                                         "price_change_5m": "0",
                                         "volume_5m": "0",
@@ -1057,7 +1061,7 @@ class TokenMonitor:
 
     async def parse_proficy_price(self, message: str) -> Dict:
         """Parse ProficyPriceBot message"""
-        logger.info(f"Starting to parse Proficy message: {message}")  # <-- NAUJAS
+        #logger.info(f"Starting to parse Proficy message: {message}")  # <-- NAUJAS
         try:
             # Bazinė duomenų struktūra
             data = {
@@ -1090,12 +1094,12 @@ class TokenMonitor:
 
             # Einam per eilutes
             lines = message.split('\n')
-            logger.info(f"Processing lines: {lines}")  # <-- NAUJAS
+            #logger.info(f"Processing lines: {lines}")  # <-- NAUJAS
             
             for line in lines:
                 # Skip header
                 if 'Price' in line and 'Volume' in line and 'B/S' in line:
-                    logger.debug(f"Skipping header line: {line}")  # <-- NAUJAS
+                    #logger.debug(f"Skipping header line: {line}")  # <-- NAUJAS
                     continue
 
                 # Tikrinam 5M ir 1H eilutes
@@ -1104,17 +1108,17 @@ class TokenMonitor:
                         try:
                             # Split ir clean
                             parts = [p.strip() for p in line.split() if p.strip()]
-                            logger.info(f"Processing {period} line: {parts}")  # <-- NAUJAS
+                            #logger.info(f"Processing {period} line: {parts}")  # <-- NAUJAS
                             
                             if len(parts) >= 4:
                                 # Price change: pašalinam % ir konvertuojam į float
                                 price_str = parts[1].replace('%', '').replace('−', '-')
                                 price = float(price_str)
-                                logger.debug(f"Parsed price: {price} from {price_str}")  # <-- NAUJAS
+                                #logger.debug(f"Parsed price: {price} from {price_str}")  # <-- NAUJAS
                                 
                                 # Volume: naudojam convert_volume
                                 volume = convert_volume(parts[2])
-                                logger.debug(f"Parsed volume: {volume} from {parts[2]}")  # <-- NAUJAS
+                                #logger.debug(f"Parsed volume: {volume} from {parts[2]}")  # <-- NAUJAS
                                 
                                 # B/S ratio: imam kaip yra
                                 bs_ratio = parts[3]
@@ -1125,7 +1129,7 @@ class TokenMonitor:
                                     'bs_ratio': bs_ratio
                                 }
                                 
-                                logger.info(f"Successfully parsed {period} data: {data[key]}")
+                                #logger.info(f"Successfully parsed {period} data: {data[key]}")
                             else:
                                 logger.warning(f"Not enough parts in {period} line: {parts}")
                                 
@@ -1134,7 +1138,7 @@ class TokenMonitor:
                             # Paliekam default None reikšmes tam periodui
 
             # Patikrinam galutinius rezultatus
-            logger.info(f"Final parsed data: {data}")  # <-- NAUJAS
+            #logger.info(f"Final parsed data: {data}")  # <-- NAUJAS
             return data
 
         except Exception as e:
@@ -1211,6 +1215,8 @@ class TokenMonitor:
             # Laukiame iki kito ciklo
             await asyncio.sleep(60)  # Tikriname kas minutę
 
+            
+
     
 class MLIntervalAnalyzer:
     """ML klasė pirminių intervalų nustatymui"""
@@ -1253,33 +1259,33 @@ class MLIntervalAnalyzer:
         ]
         
         self.filter_status = {
-                    'dev_created_tokens': True,
-                    'same_name_count': True, 
-                    'same_website_count': True,
-                    'same_telegram_count': True,
-                    'same_twitter_count': True,
-                    'dev_bought_percentage': True,
+                    'dev_created_tokens': False,
+                    'same_name_count': False, 
+                    'same_website_count': False,
+                    'same_telegram_count': False,
+                    'same_twitter_count': False,
+                    'dev_bought_percentage': False,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
                     'holders_total': True,
-                    'holders_top10_percentage': True,
-                    'holders_top25_percentage': True,
-                    'holders_top50_percentage': True,
+                    'holders_top10_percentage': False,
+                    'holders_top25_percentage': False,
+                    'holders_top50_percentage': False,
                     'market_cap': True,
                     'liquidity_usd': False,
                     'mint_status': False,
                     'freeze_status': False,
                     'lp_status': False,
                     'total_scans': False,
-                    'volume_1h': True,
+                    'volume_1h': False,
                     'price_change_1h': True,
                     'bs_ratio_1h': False,
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
                     'traders_count': True,
-                    'sniper_activity_percentage': True,
-                    'notable_bundle_supply_percentage': True,
-                    'bundle_supply_percentage': True
+                    'sniper_activity_percentage': False,
+                    'notable_bundle_supply_percentage': False,
+                    'bundle_supply_percentage': False
                 }
         
         self.scaler = MinMaxScaler()
@@ -1315,22 +1321,22 @@ class MLIntervalAnalyzer:
             'dev_bought_percentage': (0, 28),
             'dev_bought_curve_percentage': (0, 50),
             'dev_sold_percentage': (50, 100),
-            'holders_total': (350, 100000),
+            'holders_total': (150, 100000),
             'holders_top10_percentage': (0, 30),
             'holders_top25_percentage': (0, 40),
             'holders_top50_percentage': (0, 50),
-            'market_cap': (20000, 100000),
+            'market_cap': (10000, 100000),
             'liquidity_usd': (0, 10000000),
             'mint_status': (0, 0),                   # Boolean
             'freeze_status': (0, 0),                 # Boolean
             'lp_status': (1, 1),                     # Boolean
             'total_scans': (30, 1000000),
-            'volume_1h': (8000, 10000000),
+            'volume_1h': (5000, 10000000),
             'price_change_1h': (1, 1000),
             'bs_ratio_1h': (0.1, 10.0),
             'bundle_count': (0, 0),
             'sniper_activity_tokens': (0, 0),
-            'traders_count': (500, 100000),
+            'traders_count': (200, 100000),
             'sniper_activity_percentage': (0, 20),
             'notable_bundle_supply_percentage': (0, 28),
             'bundle_supply_percentage': (0, 20)
@@ -2229,6 +2235,11 @@ async def main():
         async def delete_handler(event):
             await monitor.handle_delete_command(event)
 
+        # PRIDĖTI ČIA - prieš bot'o startą:
+        print("\n=== Current Database Status ===")
+        db = DatabaseManager()
+        db.display_last_30_tokens()
+
         print("Bot started! Press Ctrl+C to stop.")
         
         # Create the recheck task
@@ -2940,6 +2951,59 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error closing database connection: {e}")
 
+    def display_last_30_tokens(self):
+        """Rodo paskutinių 30 tokenų informaciją"""
+        try:
+            print("\n=== LAST 30 TOKENS ===")
+            self.cursor.execute("""
+                SELECT 
+                    t.address,
+                    t.first_seen,
+                    t.last_updated,
+                    t.is_gem,
+                    t.total_scans,
+                    t.no_recheck,
+                    datetime('now') as current_time,
+                    CAST((julianday('now') - julianday(t.first_seen)) * 86400 AS INTEGER) as seconds_since_first_seen,
+                    CAST((julianday('now') - julianday(t.last_updated)) * 86400 AS INTEGER) as seconds_since_update
+                FROM tokens t
+                ORDER BY t.first_seen DESC
+                LIMIT 30
+            """)
+            
+            tokens = self.cursor.fetchall()
+            
+            for token in tokens:
+                print("\n" + "="*50)
+                print(f"Address: {token['address']}")
+                print(f"First Seen: {token['first_seen']}")
+                print(f"Last Updated: {token['last_updated']}")
+                print(f"Is GEM: {'Yes' if token['is_gem'] else 'No'}")
+                print(f"Total Scans: {token['total_scans']}")
+                print(f"No Recheck: {token['no_recheck']}")
+                print(f"Time Since First Seen: {token['seconds_since_first_seen']}s ({token['seconds_since_first_seen']/3600:.1f}h)")
+                print(f"Time Since Last Update: {token['seconds_since_update']}s ({token['seconds_since_update']/3600:.1f}h)")
+                
+                # Jei turėtų būti recheck'inamas
+                if (token['seconds_since_update'] > Config.RECHECK_INTERVAL and
+                    token['seconds_since_first_seen'] > Config.MIN_RECHECK_AGE and
+                    token['seconds_since_first_seen'] < Config.MAX_RECHECK_AGE and
+                    token['no_recheck'] == 0):
+                    print("🔄 Should be rechecked!")
+                else:
+                    if token['no_recheck'] == 1:
+                        print("⛔ Recheck disabled (no_recheck = 1)")
+                    elif token['seconds_since_first_seen'] <= Config.MIN_RECHECK_AGE:
+                        print(f"⏳ Too early (need {(Config.MIN_RECHECK_AGE - token['seconds_since_first_seen'])/3600:.1f}h more)")
+                    elif token['seconds_since_first_seen'] >= Config.MAX_RECHECK_AGE:
+                        print("⌛ Too old")
+                    else:
+                        print(f"⏳ Need {(Config.RECHECK_INTERVAL - token['seconds_since_update'])/3600:.1f}h more until next recheck")
+
+        except Exception as e:
+            print(f"Error displaying tokens: {str(e)}")
+
+
     def display_database_stats(self):
         """Parodo išsamią duomenų bazės statistiką"""
         try:
@@ -3387,6 +3451,7 @@ def initialize_database():
     conn.close()
     logger.info("Database initialized successfully")
 
+
 def add_no_recheck_column():
     """Prideda no_recheck stulpelį į egzistuojančią tokens lentelę"""
     try:
@@ -3415,6 +3480,7 @@ if __name__ == "__main__":
     try:
         # Inicializuojame duomenų bazę
         initialize_database()
+        
         
         
         # Run the bot
