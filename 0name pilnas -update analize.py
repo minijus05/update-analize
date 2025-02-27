@@ -1794,12 +1794,28 @@ class MLGEMAnalyzer:
                     COALESCE(p.volume_1h, 0) as volume_1h,
                     COALESCE(p.bs_ratio_1h, '1/1') as bs_ratio_1h
                 FROM tokens t
-                JOIN soul_scanner_data s ON t.address = s.token_address
-                JOIN syrax_scanner_data sy ON t.address = sy.token_address
-                LEFT JOIN proficy_price_data p ON t.address = p.token_address
+                JOIN (
+                    SELECT token_address, MAX(scan_time) as max_scan_time
+                    FROM soul_scanner_data
+                    GROUP BY token_address
+                ) latest_s ON t.address = latest_s.token_address
+                JOIN soul_scanner_data s ON s.token_address = latest_s.token_address 
+                    AND s.scan_time = latest_s.max_scan_time
+                JOIN (
+                    SELECT token_address, MAX(scan_time) as max_scan_time
+                    FROM syrax_scanner_data
+                    GROUP BY token_address
+                ) latest_sy ON t.address = latest_sy.token_address
+                JOIN syrax_scanner_data sy ON sy.token_address = latest_sy.token_address 
+                    AND sy.scan_time = latest_sy.max_scan_time
+                LEFT JOIN (
+                    SELECT token_address, MAX(scan_time) as max_scan_time
+                    FROM proficy_price_data
+                    GROUP BY token_address
+                ) latest_p ON t.address = latest_p.token_address
+                LEFT JOIN proficy_price_data p ON p.token_address = latest_p.token_address 
+                    AND p.scan_time = latest_p.max_scan_time
                 WHERE t.address = ?
-                ORDER BY s.scan_time DESC, sy.scan_time DESC, p.scan_time DESC
-                LIMIT 1
             ''', (address,))
 
             row = self.db.cursor.fetchone()
