@@ -2340,12 +2340,19 @@ class DatabaseManager:
         """
         # Gauname pradinį Market Cap
         self.cursor.execute('''
-            SELECT market_cap 
-            FROM soul_scanner_data 
-            WHERE token_address = ? 
-            ORDER BY scan_time ASC 
+            WITH FirstFilterPass AS (
+                SELECT MIN(t.last_updated) as filter_pass_time
+                FROM tokens t
+                WHERE t.address = ? AND t.no_recheck = 1
+            )
+            SELECT s.market_cap
+            FROM soul_scanner_data s
+            JOIN FirstFilterPass ffp
+            WHERE s.token_address = ?
+            AND s.scan_time >= ffp.filter_pass_time
+            ORDER BY s.scan_time ASC
             LIMIT 1
-        ''', (address,))
+        ''', (address, address))
         
         result = self.cursor.fetchone()
         if not result or not result[0] or result[0] == 0:
