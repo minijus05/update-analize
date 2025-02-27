@@ -619,26 +619,54 @@ class TokenMonitor:
             
             # Jei CA nerastas, ieškome per URL patterns prioriteto tvarka
             patterns = [
-                # Soul Sniper bot (nauji tokenai)
+                # ==== URL PATTERNS ====
+                # Trading platformos
+                r'geckoterminal\.com/solana/pools/([A-Za-z0-9]{32,44})',
+                r'dextools\.io/[^/]+/pair-explorer/([A-Za-z0-9]{32,44})',
+                r'dexscreener\.com/solana/([A-Za-z0-9]{32,44})',
+                r'birdeye\.so/token/([A-Za-z0-9]{32,44})',
+                r'raydium\.io/swap\?inputCurrency=([A-Za-z0-9]{32,44})',
+                r'jup\.ag/swap/([A-Za-z0-9]{32,44})',
+                
+                # Blockchain explorers
+                r'solscan\.io/token/([A-Za-z0-9]{32,44})',
+                r'solscan\.io/pool/([A-Za-z0-9]{32,44})',
+                r'solana\.fm/address/([A-Za-z0-9]{32,44})',
+                
+                # Scanner bots
                 r'soul_sniper_bot\?start=\d+_([A-Za-z0-9]{32,44})',
-                # Soul Scanner chart
                 r'soul_scanner_bot/chart\?startapp=([A-Za-z0-9]{32,44})',
-                # Soul Scanner start
                 r'soul_scanner_bot\?start=([A-Za-z0-9]{32,44})',
-                # Rugcheck
                 r'rugcheck\.xyz/tokens/([A-Za-z0-9]{32,44})',
-                # Papildomi Contract Address formatai
-                # Papildomi Contract Address formatai
-            # Papildomi Contract Address formatai
-                r'Contract Address:\s*([A-Za-z0-9]{32,44})',
+                
+                # ==== TEXT PATTERNS ====
+                # Contract Address patterns
+                r'(?:📃\s*CA:|CA:|Contract Address:)\s*([A-Za-z0-9]{32,44})',
                 r'(?:🔸|💠|🔷)\s*(?:CA|Contract Address):\s*([A-Za-z0-9]{32,44})',
                 r'(?:\n|\\n)\s*Contract Address:\s*([A-Za-z0-9]{32,44})',
                 r'🔸\s*[^:]+:\s*([A-Za-z0-9]{32,44})',
-                # Birdeye URL
-                r'birdeye\.so/token/([A-Za-z0-9]{32,44})',
-                # Raydium URL
-                r'outputCurrency=([A-Za-z0-9]{32,44})'
-                ]
+                
+                # Special patterns
+                r'([A-Za-z0-9]{32,44}pump)\s+is\s+up',
+                r'from\s+([A-Za-z0-9]{32,44})',
+                r'pool\s*:\s*([A-Za-z0-9]{32,44})',
+                r'token\s*:\s*([A-Za-z0-9]{32,44})',
+                r'address\s*:\s*([A-Za-z0-9]{32,44})',
+                
+                # Signal patterns
+                r'Entry Signal[^\n]*?([A-Za-z0-9]{32,44})',
+                r'Signal[^\n]*?([A-Za-z0-9]{32,44})',
+                r'⚡️[^\n]*?([A-Za-z0-9]{32,44})',
+                r'🚨[^\n]*?([A-Za-z0-9]{32,44})',
+                
+                # Price movement patterns
+                r'([A-Za-z0-9]{32,44})\s+(?:is up|mooning|pumping)',
+                r'(?:up|mooning|pumping)\s+([A-Za-z0-9]{32,44})',
+                
+                # Generic URL patterns (catch-all)
+                r'/([A-Za-z0-9]{32,44})(?:/|$)',
+                r'=([A-Za-z0-9]{32,44})(?:&|$)'
+            ]
             
             # Ieškome per kiekvieną pattern, kol randame pirmą tinkamą adresą
             for pattern in patterns:
@@ -1277,7 +1305,7 @@ class MLIntervalAnalyzer:
                     'freeze_status': False,
                     'lp_status': False,
                     'total_scans': False,
-                    'volume_1h': False,
+                    'volume_1h': True,
                     'price_change_1h': True,
                     'bs_ratio_1h': False,
                     'bundle_count': False,
@@ -1321,11 +1349,11 @@ class MLIntervalAnalyzer:
             'dev_bought_percentage': (0, 28),
             'dev_bought_curve_percentage': (0, 50),
             'dev_sold_percentage': (50, 100),
-            'holders_total': (150, 100000),
+            'holders_total': (200, 100000),
             'holders_top10_percentage': (0, 30),
             'holders_top25_percentage': (0, 40),
             'holders_top50_percentage': (0, 50),
-            'market_cap': (10000, 100000),
+            'market_cap': (14000, 100000),
             'liquidity_usd': (0, 10000000),
             'mint_status': (0, 0),                   # Boolean
             'freeze_status': (0, 0),                 # Boolean
@@ -1336,7 +1364,7 @@ class MLIntervalAnalyzer:
             'bs_ratio_1h': (0.1, 10.0),
             'bundle_count': (0, 0),
             'sniper_activity_tokens': (0, 0),
-            'traders_count': (200, 100000),
+            'traders_count': (1600, 100000),
             'sniper_activity_percentage': (0, 20),
             'notable_bundle_supply_percentage': (0, 28),
             'bundle_supply_percentage': (0, 20)
@@ -2236,9 +2264,9 @@ async def main():
             await monitor.handle_delete_command(event)
 
         # PRIDĖTI ČIA - prieš bot'o startą:
-        print("\n=== Current Database Status ===")
-        db = DatabaseManager()
-        db.display_last_30_tokens()
+        #print("\n=== Current Database Status ===")
+        #db = DatabaseManager()
+        #db.display_last_30_tokens()
 
         print("Bot started! Press Ctrl+C to stop.")
         
@@ -2597,38 +2625,59 @@ class DatabaseManager:
                         
                         # Gauname pradinius duomenis
                         self.cursor.execute('''
-                            SELECT s.* 
+                            WITH FirstFilterPass AS (
+                                -- Randame kada token'as pirmą kartą praėjo filtrus
+                                SELECT MIN(scan_time) as first_pass_time
+                                FROM soul_scanner_data s
+                                JOIN tokens t ON t.address = s.token_address
+                                WHERE t.address = ?
+                                AND t.no_recheck = 1
+                            )
+                            -- Imame duomenis būtent nuo to laiko
+                            SELECT s.*
                             FROM soul_scanner_data s
-                            JOIN tokens t ON t.address = s.token_address
+                            JOIN FirstFilterPass ffp
                             WHERE s.token_address = ?
-                            AND t.no_recheck = 1
-                            ORDER BY s.scan_time ASC 
-                            LIMIT 1
-                        ''', (address,))
+                            AND s.scan_time = ffp.first_pass_time
+                        ''', (address, address))
                         initial_soul_data = dict(self.cursor.fetchone())
 
                         # Tas pats Syrax duomenims
                         self.cursor.execute('''
-                            SELECT sy.* 
+                            WITH FirstFilterPass AS (
+                                -- Randame kada token'as pirmą kartą praėjo filtrus
+                                SELECT MIN(scan_time) as first_pass_time
+                                FROM syrax_scanner_data sy
+                                JOIN tokens t ON t.address = sy.token_address
+                                WHERE t.address = ?
+                                AND t.no_recheck = 1
+                            )
+                            -- Imame duomenis būtent nuo to laiko
+                            SELECT sy.*
                             FROM syrax_scanner_data sy
-                            JOIN tokens t ON t.address = sy.token_address
+                            JOIN FirstFilterPass ffp
                             WHERE sy.token_address = ?
-                            AND t.no_recheck = 1
-                            ORDER BY sy.scan_time ASC 
-                            LIMIT 1
-                        ''', (address,))
+                            AND sy.scan_time = ffp.first_pass_time
+                        ''', (address, address))
                         initial_syrax_data = dict(self.cursor.fetchone())
 
                         # Tas pats Proficy duomenims
                         self.cursor.execute('''
-                            SELECT p.* 
+                            WITH FirstFilterPass AS (
+                                -- Randame kada token'as pirmą kartą praėjo filtrus
+                                SELECT MIN(scan_time) as first_pass_time
+                                FROM proficy_price_data p
+                                JOIN tokens t ON t.address = p.token_address
+                                WHERE t.address = ?
+                                AND t.no_recheck = 1
+                            )
+                            -- Imame duomenis būtent nuo to laiko
+                            SELECT p.*
                             FROM proficy_price_data p
-                            JOIN tokens t ON t.address = p.token_address
+                            JOIN FirstFilterPass ffp
                             WHERE p.token_address = ?
-                            AND t.no_recheck = 1
-                            ORDER BY p.scan_time ASC 
-                            LIMIT 1
-                        ''', (address,))
+                            AND p.scan_time = ffp.first_pass_time
+                        ''', (address, address))
                         initial_proficy_data = dict(self.cursor.fetchone())
                         
                         # Įrašome į gem_tokens ML analizei
