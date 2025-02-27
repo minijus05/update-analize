@@ -1214,21 +1214,25 @@ class TokenMonitor:
                         
                         if scanner_data:
                             # Išsaugome atnaujintus duomenis
-                            self.db.save_token_data(
+                            success = self.db.save_token_data(
                                 address,
                                 scanner_data['soul'],
                                 scanner_data['syrax'],
                                 scanner_data['proficy'],
-                                is_new_token=False  # Svarbu! Tai ne naujas token
+                                is_new_token=False
                             )
                             logger.info(f"Updated token data for {address}")
 
-                                                       
-                            # Analizuojame token'ą
-                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
-                            
-                            if analysis_result['status'] == 'success':
-                                await self._handle_analysis_results(analysis_result, scanner_data)
+                            # PRIDĖTA: Palaukiame kad duomenys būtų tikrai įrašyti
+                            await asyncio.sleep(2)
+
+                            # PAKEISTA: Analizuojame tik jei išsaugojimas sėkmingas
+                            if success:
+                                # Analizuojame token'ą
+                                analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+                                
+                                if analysis_result['status'] == 'success':
+                                    await self._handle_analysis_results(analysis_result, scanner_data)
                                 
                     except Exception as e:
                         logger.error(f"Error rechecking token {address}: {e}")
@@ -1783,16 +1787,16 @@ class MLGEMAnalyzer:
                     sy.dev_sold_percentage,
                     
                     -- Proficy Price duomenys
-                    p.price_change_5m,
-                    p.volume_5m,
-                    p.bs_ratio_5m,
-                    p.price_change_1h,
-                    p.volume_1h,
-                    p.bs_ratio_1h
+                    COALESCE(p.price_change_5m, 0) as price_change_5m,
+                    COALESCE(p.volume_5m, 0) as volume_5m,
+                    COALESCE(p.bs_ratio_5m, '1/1') as bs_ratio_5m,
+                    COALESCE(p.price_change_1h, 0) as price_change_1h,
+                    COALESCE(p.volume_1h, 0) as volume_1h,
+                    COALESCE(p.bs_ratio_1h, '1/1') as bs_ratio_1h
                 FROM tokens t
                 JOIN soul_scanner_data s ON t.address = s.token_address
                 JOIN syrax_scanner_data sy ON t.address = sy.token_address
-                JOIN proficy_price_data p ON t.address = p.token_address
+                LEFT JOIN proficy_price_data p ON t.address = p.token_address
                 WHERE t.address = ?
                 ORDER BY s.scan_time DESC, sy.scan_time DESC, p.scan_time DESC
                 LIMIT 1
@@ -2624,59 +2628,54 @@ class DatabaseManager:
                         ''', (address,))
                         
                         # Gauname pradinius duomenis
+                        # Soul Scanner duomenys
                         self.cursor.execute('''
                             WITH FirstFilterPass AS (
-                                -- Randame kada token'as pirmą kartą praėjo filtrus
-                                SELECT MIN(scan_time) as first_pass_time
-                                FROM soul_scanner_data s
-                                JOIN tokens t ON t.address = s.token_address
-                                WHERE t.address = ?
-                                AND t.no_recheck = 1
+                                SELECT MIN(t.last_updated) as filter_pass_time
+                                FROM tokens t
+                                WHERE t.address = ? AND t.no_recheck = 1
                             )
-                            -- Imame duomenis būtent nuo to laiko
                             SELECT s.*
                             FROM soul_scanner_data s
                             JOIN FirstFilterPass ffp
                             WHERE s.token_address = ?
-                            AND s.scan_time = ffp.first_pass_time
+                            AND s.scan_time >= ffp.filter_pass_time
+                            ORDER BY s.scan_time ASC
+                            LIMIT 1
                         ''', (address, address))
                         initial_soul_data = dict(self.cursor.fetchone())
 
-                        # Tas pats Syrax duomenims
+                        # Syrax Scanner duomenys
                         self.cursor.execute('''
                             WITH FirstFilterPass AS (
-                                -- Randame kada token'as pirmą kartą praėjo filtrus
-                                SELECT MIN(scan_time) as first_pass_time
-                                FROM syrax_scanner_data sy
-                                JOIN tokens t ON t.address = sy.token_address
-                                WHERE t.address = ?
-                                AND t.no_recheck = 1
+                                SELECT MIN(t.last_updated) as filter_pass_time
+                                FROM tokens t
+                                WHERE t.address = ? AND t.no_recheck = 1
                             )
-                            -- Imame duomenis būtent nuo to laiko
                             SELECT sy.*
                             FROM syrax_scanner_data sy
                             JOIN FirstFilterPass ffp
                             WHERE sy.token_address = ?
-                            AND sy.scan_time = ffp.first_pass_time
+                            AND sy.scan_time >= ffp.filter_pass_time
+                            ORDER BY sy.scan_time ASC
+                            LIMIT 1
                         ''', (address, address))
                         initial_syrax_data = dict(self.cursor.fetchone())
 
-                        # Tas pats Proficy duomenims
+                        # Proficy duomenys
                         self.cursor.execute('''
                             WITH FirstFilterPass AS (
-                                -- Randame kada token'as pirmą kartą praėjo filtrus
-                                SELECT MIN(scan_time) as first_pass_time
-                                FROM proficy_price_data p
-                                JOIN tokens t ON t.address = p.token_address
-                                WHERE t.address = ?
-                                AND t.no_recheck = 1
+                                SELECT MIN(t.last_updated) as filter_pass_time
+                                FROM tokens t
+                                WHERE t.address = ? AND t.no_recheck = 1
                             )
-                            -- Imame duomenis būtent nuo to laiko
                             SELECT p.*
                             FROM proficy_price_data p
                             JOIN FirstFilterPass ffp
                             WHERE p.token_address = ?
-                            AND p.scan_time = ffp.first_pass_time
+                            AND p.scan_time >= ffp.filter_pass_time
+                            ORDER BY p.scan_time ASC
+                            LIMIT 1
                         ''', (address, address))
                         initial_proficy_data = dict(self.cursor.fetchone())
                         
