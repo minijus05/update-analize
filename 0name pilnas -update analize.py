@@ -1648,7 +1648,7 @@ class MLGEMAnalyzer:
             'dev_bought_curve_percentage', 'dev_sold_percentage', 'holders_total',
             'holders_top10_percentage', 'holders_top25_percentage',
             'holders_top50_percentage', 'market_cap', 'liquidity_usd',
-            'volume_1h', 'price_change_1h', 'bs_ratio_1h',
+            'volume_1h', 'price_change_1h', 'bs_ratio_1h', 'volume_5m', 'price_change_5m', 'bs_ratio_5m',
             # Nauji parametrai
             'sniper_activity_percentage',
             'notable_bundle_supply_percentage',
