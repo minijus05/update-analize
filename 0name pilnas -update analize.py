@@ -55,7 +55,7 @@ class Config:
     MIN_SIMILARITY_SCORE = 1.0
     MIN_CONFIDENCE_LEVEL = 0.0
 
-    MIN_RECHECK_AGE = 7200   # Minimalus laikas (1h) prieš pirmą patikrinimą
+    MIN_RECHECK_AGE = 10800   # Minimalus laikas (1h) prieš pirmą patikrinimą
     RECHECK_INTERVAL = 3600  # Laikas sekundėmis (1h = 3600s) tarp pakartotinių analizių
     MAX_RECHECK_AGE = 12 * 3600  # Maksimalus laikas, kiek ilgai sekti tokeną (pvz., 7 dienos)
     
@@ -63,22 +63,42 @@ class Config:
 class TokenMonitor:
     def __init__(self, monitor_session=None, scanner_session=None):
         if isinstance(monitor_session, SQLiteSession):
-            self.telegram = TelegramClient(monitor_session, 
-                                       Config.TELEGRAM_API_ID, 
-                                       Config.TELEGRAM_API_HASH)
+            self.telegram = TelegramClient(
+            monitor_session, 
+            Config.TELEGRAM_API_ID, 
+            Config.TELEGRAM_API_HASH,
+            sequential_updates=True,  # Pridedame šį parametrą
+            auto_reconnect=True,     # Ir šį
+            retry_delay=1            # Ir šį
+            )
         else:
-            self.telegram = TelegramClient('token_monitor_session', 
-                                       Config.TELEGRAM_API_ID, 
-                                       Config.TELEGRAM_API_HASH)
+            self.telegram = TelegramClient(
+                'token_monitor_session', 
+                Config.TELEGRAM_API_ID, 
+                Config.TELEGRAM_API_HASH,
+                sequential_updates=True,  # Pridedame šį parametrą
+                auto_reconnect=True,     # Ir šį
+                retry_delay=1            # Ir šį
+            )
         
         if isinstance(scanner_session, SQLiteSession):
-            self.scanner_client = TelegramClient(scanner_session,
-                                             Config.TELEGRAM_API_ID,
-                                             Config.TELEGRAM_API_HASH)
+            self.scanner_client = TelegramClient(
+                scanner_session,
+                Config.TELEGRAM_API_ID,
+                Config.TELEGRAM_API_HASH,
+                sequential_updates=True,  # Pridedame šį parametrą
+                auto_reconnect=True,     # Ir šį
+                retry_delay=1            # Ir šį
+            )
         else:
-            self.scanner_client = TelegramClient('scanner_session',
-                                             Config.TELEGRAM_API_ID,
-                                             Config.TELEGRAM_API_HASH)
+            self.scanner_client = TelegramClient(
+                'scanner_session',
+                Config.TELEGRAM_API_ID,
+                Config.TELEGRAM_API_HASH,
+                sequential_updates=True,  # Pridedame šį parametrą
+                auto_reconnect=True,     # Ir šį
+                retry_delay=1            # Ir šį
+            )
             
         self.db = DatabaseManager()
         self.gem_analyzer = MLGEMAnalyzer()
@@ -287,83 +307,99 @@ class TokenMonitor:
             await event.reply("❌ Error occurred while deleting token")
 
     async def _collect_scanner_data(self, address, original_message):
-        """Renka duomenis iš visų scannerių"""
-        timeout = 30  # Padidintas timeout iš 15 į 30
+        """
+        Renka scanner'ių duomenis nepriklausomai nuo žinučių tvarkos
+        """
+        timeout = 30
         start_time = time.time()
-        last_check_time = 0
-                
-        processed_messages = set()  # Pridėtas set processed messages
-    # SVARBU: Kiekvienam kvietimui kuriam naują dictionary
+        processed_messages = set()
+        collected_data = {
+            'soul': [],
+            'syrax': [],
+            'proficy': []
+        }
+
         scanner_data = {
             "soul": None,
             "syrax": None, 
             "proficy": None
         }
 
-        logger.info(f"Starting data collection for {address}") # <-- PRIDĖTI
-
         while time.time() - start_time < timeout:
-            if time.time() - last_check_time >= 1:
-                last_check_time = time.time()
+            try:
+                async for message in self.scanner_client.iter_messages(
+                    Config.SCANNER_GROUP,
+                    limit=200,
+                    min_id=original_message.id,
+                    reverse=True,
+                    wait_time=1,           # Pridedame šį
+                    ids=None               # r šį
+                ):
+                    if message.id in processed_messages:
+                        continue
+                        
+                    processed_messages.add(message.id)
+                    
+                    # Tikriname ar žinutė yra apie tą patį tokeną
+                    if address.lower() not in message.text.lower():
+                        continue
 
-                for retry in range(3):
-                    try:
-                        async for message in self.scanner_client.iter_messages(
-                            Config.SCANNER_GROUP,
-                            limit=100,
-                            min_id=original_message.id
-                        ):
-                            # Praleidžiame jau apdorotas žinutes
-                            if message.id in processed_messages:
-                                continue
-                            processed_messages.add(message.id)
+                    # Renkame visas žinutes pagal botą
+                    if message.sender_id == Config.SOUL_SCANNER_BOT:
+                        collected_data['soul'].append({
+                            'text': message.text,
+                            'date': message.date
+                        })
+                    elif message.sender_id == Config.SYRAX_SCANNER_BOT:
+                        collected_data['syrax'].append({
+                            'text': message.text,
+                            'date': message.date
+                        })
+                    elif message.sender_id == Config.PROFICY_PRICE_BOT:
+                        collected_data['proficy'].append({
+                            'text': message.text,
+                            'date': message.date
+                        })
 
-                            if message.sender_id == Config.SOUL_SCANNER_BOT:
-                                scanner_data["soul"] = self.parse_soul_scanner_response(message.text)
-                            elif message.sender_id == Config.SYRAX_SCANNER_BOT:
-                                scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
-                            elif message.sender_id == Config.PROFICY_PRICE_BOT:
-                                scanner_data["proficy"] = await self.parse_proficy_price(message.text)
+                    # Jei turime bent po vieną žinutę iš kiekvieno boto - apdorojame
+                    if all(len(msgs) > 0 for msgs in collected_data.values()):
+                        # Imame naujausias žinutes iš kiekvieno boto
+                        latest_soul = max(collected_data['soul'], key=lambda x: x['date'])
+                        latest_syrax = max(collected_data['syrax'], key=lambda x: x['date'])
+                        latest_proficy = max(collected_data['proficy'], key=lambda x: x['date'])
 
-                            if scanner_data["soul"] and scanner_data["syrax"]:
-                               # Jei turime visus duomenis - grąžiname iš karto
-                                if scanner_data["proficy"]:
-                                    return scanner_data
-                                # Jei praėjo 10s ir nėra Proficy - grąžiname su default
-                                elif time.time() - start_time > 10:
+                        # Apdorojame duomenis
+                        scanner_data["soul"] = self.parse_soul_scanner_response(latest_soul['text'])
+                        scanner_data["syrax"] = self.parse_syrax_scanner_response(latest_syrax['text'])
+                        scanner_data["proficy"] = await self.parse_proficy_price(latest_proficy['text'])
 
-                            
-                                    scanner_data["proficy"] = {
-                                        "price_change_5m": "0",
-                                        "volume_5m": "0",
-                                        "bs_ratio_5m": "1/1",
-                                        "price_change_1h": "0",
-                                        "volume_1h": "0",
-                                        "bs_ratio_1h": "1/1"
-                                    }
-                                return scanner_data
+                        # Logginame sėkmingą duomenų surinkimą
+                        logger.info(f"Collected all scanner data for {address}")
+                        logger.info(f"Soul data time: {latest_soul['date']}")
+                        logger.info(f"Syrax data time: {latest_syrax['date']}")
+                        logger.info(f"Proficy data time: {latest_proficy['date']}")
+                        
+                        return scanner_data
 
-                    except Exception as e:
-                        logger.error(f"Error collecting data (attempt {retry+1}/3): {e}")
-                        if retry < 2:
-                            await asyncio.sleep(1)
-                            continue
-                        break
+            except Exception as e:
+                logger.error(f"Error collecting scanner data: {e}")
 
-                await asyncio.sleep(1)
+            # Jei dar neturime visų duomenų - laukiame
+            await asyncio.sleep(1)
+
+        # Jei praėjo timeout - grąžiname ką turime
+        if any(scanner_data.values()):
+            missing = [k for k, v in scanner_data.items() if v is None]
+            logger.warning(f"Timeout reached. Missing data from: {missing}")
             
-        if scanner_data["soul"] and scanner_data["syrax"]:
-            if not scanner_data["proficy"]:
-                scanner_data["proficy"] = {
-                    "price_change_5m": "0",
-                    "volume_5m": "0",
-                    "bs_ratio_5m": "1/1",
-                    "price_change_1h": "0",
-                    "volume_1h": "0",
-                    "bs_ratio_1h": "1/1"
-                }
+            # Jei turime Proficy duomenis - logginame juos
+            if collected_data['proficy']:
+                latest_proficy = max(collected_data['proficy'], key=lambda x: x['date'])
+                logger.info(f"Last Proficy message:\n{latest_proficy['text']}")
+                
             return scanner_data
-            
+        
+        logger.error(f"No scanner data collected for {address} after {timeout}s")
         return None
 
     async def _handle_analysis_results(self, analysis_result, scanner_data):
@@ -1088,8 +1124,23 @@ class TokenMonitor:
             }
 
     async def parse_proficy_price(self, message: str) -> Dict:
-        """Parse ProficyPriceBot message"""
-        #logger.info(f"Starting to parse Proficy message: {message}")  # <-- NAUJAS
+        """
+        Apdoroja Proficy bot'o žinutę su kainų duomenimis.
+        Gali tvarkyti įvairius formatus:
+        Price           Volume         B/S
+        5M: -19.3%   $2.8K    36/48  
+        1H:   -93%   $133K  1.3K/1.5K
+        1D:   -94%   $1.51M  31K/31K
+
+        Arba:
+        Price Volume B/S
+        5M:-19.3% $2.8K 36/48
+        1H: −93% $133K 1.3K/1.5K
+
+        Arba:
+        Price    Volume    B/S
+        5M: 19.3%    $2.8K     36/48
+        """
         try:
             # Bazinė duomenų struktūra
             data = {
@@ -1097,83 +1148,139 @@ class TokenMonitor:
                 '1h': {'price_change': None, 'volume': None, 'bs_ratio': None}
             }
 
-            # Tikrinimai
-            if not message or "No valid intervals found" in message:
-                logger.warning(f"Invalid message: {message}")
+            if not message:
+                logger.warning("Empty Proficy message")
                 return data
 
-            def convert_volume(volume_str: str) -> float:
+            def clean_number(value: str) -> str:
+                """Valo skaičių string'ą nuo įvairių minuso ženklų ir whitespace"""
+                return value.replace('−', '-').replace('‒', '-').replace('–', '-').strip()
+
+            def parse_volume(vol_str: str) -> float:
+                """
+                Konvertuoja volume string į float.
+                Pvz: "$1.5K" -> 1500, "$1M" -> 1000000
+                """
                 try:
-                    # Nuimam $ ir pakeičiam - į -
-                    clean_str = volume_str.replace('$', '').replace('−', '-')
+                    # Pašalinam $ ir tarpus
+                    clean_str = vol_str.replace('$', '').strip()
                     
-                    # Konvertuojam K/M
-                    if 'K' in clean_str:
-                        val = float(clean_str.replace('K', '')) * 1000
-                    elif 'M' in clean_str:
-                        val = float(clean_str.replace('M', '')) * 1000000
-                    else:
-                        val = float(clean_str)
+                    # Konvertuojam į float pagal sufiksą
+                    multiplier = 1
+                    if 'K' in clean_str.upper():
+                        multiplier = 1000
+                        clean_str = clean_str.upper().replace('K', '')
+                    elif 'M' in clean_str.upper():
+                        multiplier = 1000000
+                        clean_str = clean_str.upper().replace('M', '')
                     
-                    return val
+                    return float(clean_number(clean_str)) * multiplier
                 except (ValueError, TypeError) as e:
-                    logger.error(f"Error converting volume {volume_str}: {e}")  # <-- NAUJAS
+                    logger.error(f"Error parsing volume '{vol_str}': {e}")
+                    return 0
+
+            def parse_bs_ratio(ratio_str: str) -> str:
+                """
+                Apdoroja B/S ratio string.
+                Pvz: "36/48", "1.3K/1.5K", "1K/1K"
+                """
+                try:
+                    # Pašalinam tarpus
+                    clean_str = ratio_str.strip()
+                    if '/' not in clean_str:
+                        return '1/1'
+                    
+                    buys, sells = clean_str.split('/')
+                    
+                    # Konvertuojam K į 1000 jei reikia
+                    def convert_k(val: str) -> str:
+                        val = val.strip()
+                        if 'K' in val.upper():
+                            num = float(val.upper().replace('K', '').strip())
+                            return str(int(num * 1000))
+                        return val
+                    
+                    buys = convert_k(buys)
+                    sells = convert_k(sells)
+                    
+                    return f"{buys}/{sells}"
+                except Exception as e:
+                    logger.error(f"Error parsing B/S ratio '{ratio_str}': {e}")
+                    return '1/1'
+
+            def parse_price_change(price_str: str) -> float:
+                """
+                Konvertuoja price change string į float.
+                Pvz: "-19.3%", "19.3%", "−93%"
+                """
+                try:
+                    # Pašalinam % ir tarpus
+                    clean_str = clean_number(price_str.replace('%', '').strip())
+                    return float(clean_str)
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Error parsing price change '{price_str}': {e}")
                     return 0
 
             # Einam per eilutes
             lines = message.split('\n')
-            #logger.info(f"Processing lines: {lines}")  # <-- NAUJAS
-            
             for line in lines:
-                # Skip header
-                if 'Price' in line and 'Volume' in line and 'B/S' in line:
-                    #logger.debug(f"Skipping header line: {line}")  # <-- NAUJAS
+                # Ignoruojam header eilutę
+                if any(header in line.lower() for header in ['price', 'volume', 'b/s']):
                     continue
 
-                # Tikrinam 5M ir 1H eilutes
-                for period, key in [('5M:', '5m'), ('1H:', '1h')]:
-                    if period in line:
-                        try:
-                            # Split ir clean
-                            parts = [p.strip() for p in line.split() if p.strip()]
-                            #logger.info(f"Processing {period} line: {parts}")  # <-- NAUJAS
-                            
-                            if len(parts) >= 4:
-                                # Price change: pašalinam % ir konvertuojam į float
-                                price_str = parts[1].replace('%', '').replace('−', '-')
-                                price = float(price_str)
-                                #logger.debug(f"Parsed price: {price} from {price_str}")  # <-- NAUJAS
-                                
-                                # Volume: naudojam convert_volume
-                                volume = convert_volume(parts[2])
-                                #logger.debug(f"Parsed volume: {volume} from {parts[2]}")  # <-- NAUJAS
-                                
-                                # B/S ratio: imam kaip yra
-                                bs_ratio = parts[3]
-                                
-                                data[key] = {
-                                    'price_change': price,
-                                    'volume': volume,
-                                    'bs_ratio': bs_ratio
-                                }
-                                
-                                #logger.info(f"Successfully parsed {period} data: {data[key]}")
-                            else:
-                                logger.warning(f"Not enough parts in {period} line: {parts}")
-                                
-                        except Exception as e:
-                            logger.error(f"Error parsing {period} line '{line}': {str(e)}")
-                            # Paliekam default None reikšmes tam periodui
+                # Naudojam regex su lanksčiais tarpais
+                # 5M: arba 5M:, tada optional tarpai
+                period_match = re.search(r'(5M:|1H:)', line, re.IGNORECASE)
+                if not period_match:
+                    continue
 
-            # Patikrinam galutinius rezultatus
-            #logger.info(f"Final parsed data: {data}")  # <-- NAUJAS
+                period = '5m' if '5' in period_match.group() else '1h'
+                
+                try:
+                    # Price Change - ieškome bet kokio skaičiaus su % ženklu
+                    # Gali būti: -19.3%, 19.3%, −93%
+                    price_match = re.search(r'[−-]?\d+\.?\d*%', line)
+                    price = parse_price_change(price_match.group()) if price_match else 0
+
+                    # Volume - ieškome $ su skaičiumi ir galimu K/M sufiksu
+                    # Gali būti: $2.8K, $133K, $1.51M
+                    volume_match = re.search(r'\$\s*\d+\.?\d*\s*[KMkm]?', line)
+                    volume = parse_volume(volume_match.group()) if volume_match else 0
+
+                    # B/S Ratio - ieškome x/y formato su galimais K sufiksais
+                    # Gali būti: 36/48, 1.3K/1.5K, 31K/31K
+                    bs_match = re.search(r'\d+\.?\d*\s*[Kk]?\s*/\s*\d+\.?\d*\s*[Kk]?', line)
+                    bs_ratio = parse_bs_ratio(bs_match.group()) if bs_match else '1/1'
+
+                    # Įrašome duomenis tik jei bent vienas laukas turi reikšmę
+                    if price != 0 or volume != 0 or bs_ratio != '1/1':
+                        data[period] = {
+                            'price_change': price,
+                            'volume': volume,
+                            'bs_ratio': bs_ratio
+                        }
+                        logger.info(f"Parsed {period} data: {data[period]}")
+
+                except Exception as e:
+                    logger.error(f"Error parsing line '{line}': {str(e)}")
+                    continue
+
+            # Patikriname ar turime bent vieną teisingą įrašą
+            if all(all(v is None for v in period_data.values()) 
+                   for period_data in data.values()):
+                logger.warning("No valid data parsed from message")
+                return {
+                    '5m': {'price_change': 0, 'volume': 0, 'bs_ratio': '1/1'},
+                    '1h': {'price_change': 0, 'volume': 0, 'bs_ratio': '1/1'}
+                }
+
             return data
 
         except Exception as e:
-            logger.error(f"Global error in parse_proficy_price: {str(e)}", exc_info=True)  # <-- NAUJAS
+            logger.error(f"Global error in parse_proficy_price: {str(e)}")
             return {
-                '5m': {'price_change': None, 'volume': None, 'bs_ratio': None},
-                '1h': {'price_change': None, 'volume': None, 'bs_ratio': None}
+                '5m': {'price_change': 0, 'volume': 0, 'bs_ratio': '1/1'},
+                '1h': {'price_change': 0, 'volume': 0, 'bs_ratio': '1/1'}
             }
 
     async def schedule_token_recheck(self):
@@ -1280,6 +1387,9 @@ class MLIntervalAnalyzer:
             'volume_1h',
             'price_change_1h',
             'bs_ratio_1h',
+            'volume_5m',           # Naujas
+            'price_change_5m',     # Naujas
+            'bs_ratio_5m',     
             
             # Kiti parametrai iš syrax_scanner_data
             'bundle_count',
@@ -1299,22 +1409,25 @@ class MLIntervalAnalyzer:
                     'dev_bought_percentage': False,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
-                    'holders_total': True,
+                    'holders_total': False,
                     'holders_top10_percentage': False,
                     'holders_top25_percentage': False,
                     'holders_top50_percentage': False,
-                    'market_cap': True,
+                    'market_cap': False,
                     'liquidity_usd': False,
                     'mint_status': False,
                     'freeze_status': False,
                     'lp_status': False,
                     'total_scans': False,
-                    'volume_1h': True,
-                    'price_change_1h': True,
+                    'volume_1h': False,
+                    'price_change_1h': False,
                     'bs_ratio_1h': False,
+                    'volume_5m': True,           # Naujas
+                    'price_change_5m': True,     # Naujas
+                    'bs_ratio_5m': False,     
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
-                    'traders_count': True,
+                    'traders_count': False,
                     'sniper_activity_percentage': False,
                     'notable_bundle_supply_percentage': False,
                     'bundle_supply_percentage': False
@@ -1324,32 +1437,13 @@ class MLIntervalAnalyzer:
         self.isolation_forest = IsolationForest(contamination='auto', random_state=42)
         self.intervals = {feature: {'min': float('inf'), 'max': float('-inf')} for feature in self.primary_features}
 
-        # IQR daugikliai skirtingiems parametrams
-        self.IQR_MULTIPLIERS = {
-            'price_change_1h': 1.5,      # Mažesnis daugiklis kainų pokyčiams
-            'market_cap': 1.5,           # Vidutinis daugiklis market cap
-            'volume_1h': 2.5,            # Vidutinis daugiklis volume
-            'holders_total': 3.5,        # Vidutinis daugiklis holders
-            'total_scans': 1.5,          # Vidutinis daugiklis skanavimams
-            'traders_count': 6.5,        # Vidutinis daugiklis traders
-            'bs_ratio_1h': 1.5,          # Mažesnis daugiklis buy/sell ratio
-            'liquidity_usd': 1.5,        # Vidutinis daugiklis likvidumui
-            # Naujai pridedami parametrai
-            'sniper_activity_percentage': 1.5,      # Vidutinis daugiklis sniper activity
-            'notable_bundle_supply_percentage': 1.5, # Vidutinis daugiklis notable bundle
-            'bundle_supply_percentage': 1.5,        # Vidutinis daugiklis bundle
-    
-                   
-            'default': 3.5               # Visiems kitiems
-        }
-
-        # Absoliučios ribos parametrams
+               # Absoliučios ribos parametrams
         self.ABSOLUTE_LIMITS = {
             'dev_created_tokens': (0, 10),           # Nustatykite tinkamas ribas
-            'same_name_count': (0, 85),               # Nustatykite tinkamas ribas
-            'same_website_count': (0, 360),            # Nustatykite tinkamas ribas
-            'same_telegram_count': (0, 400),           # Nustatykite tinkamas ribas
-            'same_twitter_count': (0, 221),            # Nustatykite tinkamas ribas
+            'same_name_count': (0, 55),               # Nustatykite tinkamas ribas
+            'same_website_count': (0, 300),            # Nustatykite tinkamas ribas
+            'same_telegram_count': (0, 450),           # Nustatykite tinkamas ribas
+            'same_twitter_count': (0, 300),            # Nustatykite tinkamas ribas
             'dev_bought_percentage': (0, 28),
             'dev_bought_curve_percentage': (0, 50),
             'dev_sold_percentage': (50, 100),
@@ -1357,7 +1451,7 @@ class MLIntervalAnalyzer:
             'holders_top10_percentage': (0, 30),
             'holders_top25_percentage': (0, 40),
             'holders_top50_percentage': (0, 50),
-            'market_cap': (14000, 100000),
+            'market_cap': (20000, 150000),
             'liquidity_usd': (0, 10000000),
             'mint_status': (0, 0),                   # Boolean
             'freeze_status': (0, 0),                 # Boolean
@@ -1366,9 +1460,12 @@ class MLIntervalAnalyzer:
             'volume_1h': (5000, 10000000),
             'price_change_1h': (1, 1000),
             'bs_ratio_1h': (0.1, 10.0),
+            'price_change_5m': (-70, 1000),      # 
+            'volume_5m': (1000, 10000000),       # 
+            'bs_ratio_5m': (0.1, 10.0),
             'bundle_count': (0, 0),
             'sniper_activity_tokens': (0, 0),
-            'traders_count': (1600, 100000),
+            'traders_count': (160, 100000),
             'sniper_activity_percentage': (0, 20),
             'notable_bundle_supply_percentage': (0, 28),
             'bundle_supply_percentage': (0, 20)
@@ -1797,25 +1894,33 @@ class MLGEMAnalyzer:
                 JOIN (
                     SELECT token_address, MAX(scan_time) as max_scan_time
                     FROM soul_scanner_data
+                    WHERE scan_time >= datetime('now', '-5 minutes')  -- Paskutinės 5 minutės
                     GROUP BY token_address
                 ) latest_s ON t.address = latest_s.token_address
                 JOIN soul_scanner_data s ON s.token_address = latest_s.token_address 
                     AND s.scan_time = latest_s.max_scan_time
+
                 JOIN (
                     SELECT token_address, MAX(scan_time) as max_scan_time
                     FROM syrax_scanner_data
+                    WHERE scan_time >= datetime('now', '-5 minutes')  -- Paskutinės 5 minutės
                     GROUP BY token_address
                 ) latest_sy ON t.address = latest_sy.token_address
                 JOIN syrax_scanner_data sy ON sy.token_address = latest_sy.token_address 
                     AND sy.scan_time = latest_sy.max_scan_time
+
                 LEFT JOIN (
                     SELECT token_address, MAX(scan_time) as max_scan_time
                     FROM proficy_price_data
+                    WHERE scan_time >= datetime('now', '-5 minutes')  -- Paskutinės 5 minutės
                     GROUP BY token_address
                 ) latest_p ON t.address = latest_p.token_address
                 LEFT JOIN proficy_price_data p ON p.token_address = latest_p.token_address 
                     AND p.scan_time = latest_p.max_scan_time
+
                 WHERE t.address = ?
+                  AND latest_s.max_scan_time IS NOT NULL    -- Įsitikiname kad turime naujus Soul duomenis
+                  AND latest_sy.max_scan_time IS NOT NULL   
             ''', (address,))
 
             row = self.db.cursor.fetchone()
@@ -2319,6 +2424,16 @@ async def main():
 class DatabaseManager:
     def __init__(self, db_path='token_monitor.db'):
         self.db_path = db_path
+        def adapt_datetime(dt):
+            return dt.isoformat()
+
+        def convert_datetime(s):
+            return datetime.fromisoformat(s)
+
+        # Registruojame naujus adapterius
+        sqlite3.register_adapter(datetime, adapt_datetime)
+        sqlite3.register_converter("datetime", convert_datetime)
+        
         self._ensure_connection()
         
 
@@ -2488,7 +2603,6 @@ class DatabaseManager:
                     
                     # Proficy Price duomenų įrašymas
                     if proficy_data:
-                        
                         self.cursor.execute('''
                             INSERT INTO proficy_price_data (
                                 token_address, scan_time,
@@ -2497,12 +2611,12 @@ class DatabaseManager:
                             ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
                         ''', (
                             address,
-                            proficy_data.get('5m', {}).get('price_change'),
-                            proficy_data.get('5m', {}).get('volume'),
-                            proficy_data.get('5m', {}).get('bs_ratio'),
-                            proficy_data.get('1h', {}).get('price_change'),
-                            proficy_data.get('1h', {}).get('volume'),
-                            proficy_data.get('1h', {}).get('bs_ratio')
+                            proficy_data.get('5m', {}).get('price_change', 0),  # default 0
+                            proficy_data.get('5m', {}).get('volume', 0),        # default 0
+                            proficy_data.get('5m', {}).get('bs_ratio', '1/1'),  # default '1/1'
+                            proficy_data.get('1h', {}).get('price_change', 0),  # default 0
+                            proficy_data.get('1h', {}).get('volume', 0),        # default 0
+                            proficy_data.get('1h', {}).get('bs_ratio', '1/1')   # default '1/1'
                         ))
                         
                 except Exception as e:
@@ -3314,6 +3428,8 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error during diagnostics: {str(e)}")
 
+
+
 def initialize_database():
     """Inicializuoja duomenų bazę"""
     conn = sqlite3.connect('token_monitor.db')
@@ -3521,6 +3637,7 @@ def initialize_database():
     conn.commit()
     conn.close()
     logger.info("Database initialized successfully")
+    
 
 
 def add_no_recheck_column():
