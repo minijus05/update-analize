@@ -1945,6 +1945,16 @@ class MLGEMAnalyzer:
                 
                 if self.interval_analyzer.filter_status.get('dev_created_tokens', False):
                     primary_data['dev_created_tokens'] = float(db_data.get('dev_created_tokens', 0))
+
+                # Pridėti šiuos patikrinimus į analyze_token metodą:
+                if self.interval_analyzer.filter_status.get('volume_5m', False):
+                    primary_data['volume_5m'] = float(db_data.get('volume_5m', 0))
+                    
+                if self.interval_analyzer.filter_status.get('price_change_5m', False):
+                    primary_data['price_change_5m'] = float(db_data.get('price_change_5m', 0))
+                    
+                if self.interval_analyzer.filter_status.get('bs_ratio_5m', False):
+                    primary_data['bs_ratio_5m'] = self._parse_bs_ratio(db_data.get('bs_ratio_5m', '1/1'))
                     
                 if self.interval_analyzer.filter_status.get('same_name_count', False):
                     primary_data['same_name_count'] = float(db_data.get('same_name_count', 0))
